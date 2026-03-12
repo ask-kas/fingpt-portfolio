@@ -1,97 +1,113 @@
 """
-data_fetcher.py — Clients for Alpha Vantage, FRED, and SEC EDGAR APIs.
+data_fetcher.py — Clients for Yahoo Finance (yfinance), FRED, and SEC EDGAR APIs.
+
+yfinance: Free, no API key, no rate limits for reasonable usage.
+FRED: Free API key required.
+SEC EDGAR: No key, just a User-Agent string.
 """
 
 import httpx
 import os
-import asyncio
+import yfinance as yf
 from datetime import datetime, timedelta
 
 
-class AlphaVantageClient:
-    """Fetches stock quotes, daily prices, and news from Alpha Vantage."""
-
-    BASE = "https://www.alphavantage.co/query"
-
-    def __init__(self, api_key: str):
-        self.api_key = api_key
+class YFinanceClient:
+    """Fetches stock quotes, daily prices, and news from Yahoo Finance via yfinance."""
 
     async def get_quote(self, symbol: str) -> dict:
         """Get real-time quote for a symbol."""
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(self.BASE, params={
-                "function": "GLOBAL_QUOTE",
-                "symbol": symbol,
-                "apikey": self.api_key,
-            })
-            data = r.json()
-            gq = data.get("Global Quote", {})
-            if not gq:
-                return {"symbol": symbol, "error": "No data (rate limit or bad symbol)"}
+        try:
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            hist = ticker.history(period="2d")
+
+            if hist.empty:
+                return {"symbol": symbol, "error": "No data found"}
+
+            current = float(hist["Close"].iloc[-1])
+            prev = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else current
+            change = current - prev
+            change_pct = (change / prev * 100) if prev else 0
+
             return {
-                "symbol": gq.get("01. symbol", symbol),
-                "price": float(gq.get("05. price", 0)),
-                "change": float(gq.get("09. change", 0)),
-                "change_pct": gq.get("10. change percent", "0%"),
-                "volume": int(gq.get("06. volume", 0)),
-                "latest_day": gq.get("07. latest trading day", ""),
+                "symbol": symbol,
+                "price": round(current, 2),
+                "change": round(change, 2),
+                "change_pct": f"{change_pct:.2f}%",
+                "volume": int(hist["Volume"].iloc[-1]),
+                "latest_day": str(hist.index[-1].date()),
+                "name": info.get("shortName", symbol),
             }
+        except Exception as e:
+            return {"symbol": symbol, "error": str(e)}
 
     async def get_daily(self, symbol: str, days: int = 100) -> list[dict]:
-        """Get daily OHLCV data (compact = last 100 trading days)."""
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(self.BASE, params={
-                "function": "TIME_SERIES_DAILY",
-                "symbol": symbol,
-                "outputsize": "compact",
-                "apikey": self.api_key,
-            })
-            data = r.json()
-            ts = data.get("Time Series (Daily)", {})
-            rows = []
-            for date_str, vals in sorted(ts.items(), reverse=True)[:days]:
-                rows.append({
-                    "date": date_str,
-                    "open": float(vals["1. open"]),
-                    "high": float(vals["2. high"]),
-                    "low": float(vals["3. low"]),
-                    "close": float(vals["4. close"]),
-                    "volume": int(vals["5. volume"]),
-                })
-            return rows
+        """Get daily OHLCV data."""
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period=f"{days}d")
 
-    async def get_news(self, tickers: str, limit: int = 10) -> list[dict]:
-        """
-        Get news sentiment from Alpha Vantage News API.
-        tickers: comma-separated like "AAPL,MSFT"
-        """
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(self.BASE, params={
-                "function": "NEWS_SENTIMENT",
-                "tickers": tickers,
-                "limit": limit,
-                "apikey": self.api_key,
-            })
-            data = r.json()
-            feed = data.get("feed", [])
-            articles = []
-            for item in feed[:limit]:
-                articles.append({
-                    "title": item.get("title", ""),
-                    "summary": item.get("summary", "")[:200],
-                    "source": item.get("source", ""),
-                    "published": item.get("time_published", ""),
-                    "overall_sentiment": item.get("overall_sentiment_label", ""),
-                    "ticker_sentiments": [
-                        {
-                            "ticker": ts.get("ticker", ""),
-                            "score": ts.get("ticker_sentiment_score", ""),
-                            "label": ts.get("ticker_sentiment_label", ""),
-                        }
-                        for ts in item.get("ticker_sentiment", [])
-                    ],
+            if hist.empty:
+                return []
+
+            rows = []
+            for date, row in hist.iterrows():
+                rows.append({
+                    "date": str(date.date()),
+                    "open": round(float(row["Open"]), 2),
+                    "high": round(float(row["High"]), 2),
+                    "low": round(float(row["Low"]), 2),
+                    "close": round(float(row["Close"]), 2),
+                    "volume": int(row["Volume"]),
                 })
-            return articles
+
+            # Return newest first
+            rows.reverse()
+            return rows
+        except Exception as e:
+            return []
+
+    async def get_news(self, symbols: list[str], limit: int = 10) -> list[dict]:
+        """Get news for given symbols."""
+        articles = []
+        seen_titles = set()
+
+        for sym in symbols:
+            try:
+                ticker = yf.Ticker(sym)
+                news = ticker.news
+                if not news:
+                    continue
+
+                for item in news:
+                    title = item.get("title", "")
+                    if title in seen_titles:
+                        continue
+                    seen_titles.add(title)
+
+                    published = item.get("providerPublishTime", "")
+                    if isinstance(published, (int, float)):
+                        published = datetime.fromtimestamp(published).strftime("%Y%m%d")
+
+                    articles.append({
+                        "title": title,
+                        "summary": item.get("summary", "")[:200] if item.get("summary") else "",
+                        "source": item.get("publisher", ""),
+                        "published": str(published),
+                        "overall_sentiment": "",
+                        "ticker_sentiments": [{"ticker": sym, "score": "", "label": ""}],
+                    })
+
+                    if len(articles) >= limit:
+                        break
+            except Exception:
+                continue
+
+            if len(articles) >= limit:
+                break
+
+        return articles[:limit]
 
 
 class FREDClient:
@@ -99,7 +115,6 @@ class FREDClient:
 
     BASE = "https://api.stlouisfed.org/fred/series/observations"
 
-    # Key macro series
     SERIES = {
         "fed_funds_rate": "FEDFUNDS",
         "cpi_yoy": "CPIAUCSL",
@@ -149,9 +164,6 @@ class FREDClient:
 class SECEdgarClient:
     """Fetches company filings from SEC EDGAR."""
 
-    BASE = "https://efts.sec.gov/LATEST/search-index?q="
-    FILINGS_BASE = "https://data.sec.gov/submissions/CIK{cik}.json"
-
     def __init__(self, user_agent: str):
         self.user_agent = user_agent
         self.headers = {
@@ -162,12 +174,7 @@ class SECEdgarClient:
     async def get_company_filings(self, ticker: str, filing_type: str = "10-K", count: int = 5) -> list[dict]:
         """Get recent filings for a company by ticker."""
         async with httpx.AsyncClient(timeout=30) as client:
-            # First, resolve ticker to CIK
-            r = await client.get(
-                f"https://efts.sec.gov/LATEST/search-index?q=%22{ticker}%22&dateRange=custom&startdt=2024-01-01&forms={filing_type}",
-                headers=self.headers,
-            )
-            # Fallback: use the company tickers endpoint
+            # Resolve ticker to CIK
             r2 = await client.get(
                 "https://www.sec.gov/files/company_tickers.json",
                 headers=self.headers,
@@ -213,7 +220,7 @@ def create_clients() -> dict:
     load_dotenv("config/.env")
 
     return {
-        "alpha_vantage": AlphaVantageClient(os.getenv("ALPHA_VANTAGE_API_KEY", "")),
+        "yfinance": YFinanceClient(),
         "fred": FREDClient(os.getenv("FRED_API_KEY", "")),
         "sec": SECEdgarClient(os.getenv("SEC_USER_AGENT", "Anonymous anon@example.com")),
     }

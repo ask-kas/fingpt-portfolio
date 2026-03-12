@@ -27,7 +27,7 @@ app = FastAPI(title="FinGPT Portfolio Analyzer")
 clients = create_clients()
 model = create_model_client()
 
-av = clients["alpha_vantage"]
+yf_client = clients["yfinance"]
 fred = clients["fred"]
 sec = clients["sec"]
 
@@ -64,19 +64,20 @@ async def health():
 @app.get("/api/quote/{symbol}")
 async def get_quote(symbol: str):
     """Get real-time quote for a stock symbol."""
-    return await av.get_quote(symbol.upper())
+    return await yf_client.get_quote(symbol.upper())
 
 
 @app.get("/api/daily/{symbol}")
 async def get_daily(symbol: str, days: int = 100):
     """Get daily OHLCV data."""
-    return await av.get_daily(symbol.upper(), days)
+    return await yf_client.get_daily(symbol.upper(), days)
 
 
 @app.get("/api/news")
 async def get_news(tickers: str = "AAPL", limit: int = 10):
     """Get financial news for given tickers (comma-separated)."""
-    return await av.get_news(tickers.upper(), limit)
+    symbols = [t.strip().upper() for t in tickers.split(",")]
+    return await yf_client.get_news(symbols, limit)
 
 
 @app.get("/api/macro")
@@ -95,7 +96,7 @@ async def get_filings(ticker: str, filing_type: str = "10-K", count: int = 5):
 async def analyze(req: PortfolioRequest):
     """
     Full portfolio analysis:
-    1. Fetch daily prices for all holdings
+    1. Fetch daily prices for all holdings via yfinance
     2. Calculate quantitative metrics
     3. Fetch news + run FinGPT sentiment (if model available)
     4. Fetch macro indicators
@@ -106,18 +107,15 @@ async def analyze(req: PortfolioRequest):
     for h in holdings:
         h["symbol"] = h["symbol"].upper()
 
-    # 1. Fetch daily data for all symbols (with rate-limit spacing)
+    # 1. Fetch daily data for all symbols (yfinance has no rate limit issues)
     daily_data = {}
     for sym in symbols:
         try:
-            daily_data[sym] = await av.get_daily(sym)
+            daily_data[sym] = await yf_client.get_daily(sym)
         except Exception as e:
             daily_data[sym] = []
-        # Alpha Vantage free tier: 5 calls/min
-        await asyncio.sleep(0.5)
 
     # 2. Quantitative analysis
-    # Try to get current risk-free rate from FRED
     risk_free = 0.05
     try:
         macro = await fred.get_macro_snapshot()
@@ -125,16 +123,15 @@ async def analyze(req: PortfolioRequest):
         if "value" in ffr:
             risk_free = float(ffr["value"]) / 100
     except Exception:
-        pass
+        macro = {}
 
     analytics = analyze_portfolio(holdings, daily_data, risk_free)
 
     # 3. News + sentiment
-    tickers_str = ",".join(symbols)
     news = []
     sentiments = []
     try:
-        news = await av.get_news(tickers_str, limit=8)
+        news = await yf_client.get_news(symbols, limit=8)
     except Exception:
         pass
 
@@ -143,13 +140,12 @@ async def analyze(req: PortfolioRequest):
     if model_available and news:
         headlines = [a["title"] for a in news if a.get("title")]
         sentiments = await model.batch_sentiment(headlines)
-        # Attach FinGPT sentiment back to news
         for i, article in enumerate(news):
             if i < len(sentiments):
                 article["fingpt_sentiment"] = sentiments[i]
 
-    # 4. Macro snapshot (already fetched above for risk-free rate, reuse)
-    if "macro" not in locals() or macro is None:
+    # 4. Macro snapshot (already fetched above for risk-free rate)
+    if not macro:
         try:
             macro = await fred.get_macro_snapshot()
         except Exception:
