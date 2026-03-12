@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FinGPT Portfolio Analyzer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d2e;
+    --border: #2a2d3e;
+    --text: #e1e4ed;
+    --muted: #8b8fa3;
+    --accent: #6366f1;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #eab308;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 16px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px;
+  }
+  header h1 { font-size: 1.4rem; font-weight: 600; }
+  header h1 span { color: var(--accent); }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--muted); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .status-dot.ok { background: var(--green); }
+  .status-dot.off { background: var(--red); }
+
+  /* Holdings Input */
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 20px;
+  }
+  .panel h2 { font-size: 1rem; font-weight: 600; margin-bottom: 12px; }
+  .holdings-grid {
+    display: grid; grid-template-columns: 2fr 1fr 1fr auto;
+    gap: 8px; align-items: center; margin-bottom: 12px;
+  }
+  .holdings-grid label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  input {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 12px; color: var(--text); font-size: 0.9rem;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  button {
+    padding: 8px 16px; border-radius: 6px; border: none;
+    cursor: pointer; font-size: 0.85rem; font-weight: 500;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: #5558e6; }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-secondary { background: var(--border); color: var(--text); }
+  .btn-danger { background: transparent; color: var(--red); border: 1px solid var(--red); padding: 4px 10px; }
+  .btn-row { display: flex; gap: 8px; margin-top: 8px; }
+
+  /* Dashboard Grid */
+  .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 768px) { .dashboard { grid-template-columns: 1fr; } }
+  .full-width { grid-column: 1 / -1; }
+
+  /* Summary Cards */
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .metric-card {
+    background: var(--bg); border-radius: 8px; padding: 12px;
+    text-align: center;
+  }
+  .metric-card .label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .metric-card .value { font-size: 1.3rem; font-weight: 700; margin-top: 4px; }
+  .positive { color: var(--green); }
+  .negative { color: var(--red); }
+  .neutral { color: var(--yellow); }
+
+  /* Holdings Table */
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; padding: 8px; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+  td { padding: 8px; border-bottom: 1px solid var(--border); }
+
+  /* News & AI Insight */
+  .news-item {
+    padding: 10px 0; border-bottom: 1px solid var(--border);
+  }
+  .news-item:last-child { border: none; }
+  .news-title { font-weight: 500; font-size: 0.9rem; }
+  .news-meta { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+  .sentiment-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+  }
+  .sentiment-positive { background: rgba(34,197,94,0.15); color: var(--green); }
+  .sentiment-negative { background: rgba(239,68,68,0.15); color: var(--red); }
+  .sentiment-neutral { background: rgba(234,179,8,0.15); color: var(--yellow); }
+
+  .ai-box {
+    background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(99,102,241,0.05));
+    border: 1px solid rgba(99,102,241,0.3);
+    border-radius: 8px; padding: 16px; font-size: 0.9rem;
+    white-space: pre-wrap;
+  }
+  .ai-box.unavailable { opacity: 0.6; font-style: italic; }
+
+  .chart-container { position: relative; height: 250px; }
+  .loader { text-align: center; padding: 40px; color: var(--muted); }
+  .loader::after { content: ''; display: inline-block; width: 20px; height: 20px; border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; margin-left: 8px; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1><span>FinGPT</span> Portfolio Analyzer</h1>
+    <div class="status">
+      <div class="status-dot" id="modelStatus"></div>
+      <span id="modelStatusText">Checking model...</span>
+    </div>
+  </header>
+
+  <!-- Holdings Input -->
+  <div class="panel">
+    <h2>Your Portfolio</h2>
+    <div id="holdingsContainer"></div>
+    <div class="btn-row">
+      <button class="btn-secondary" onclick="addHolding()">+ Add Stock</button>
+      <button class="btn-primary" id="analyzeBtn" onclick="analyzePortfolio()">Analyze Portfolio</button>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="results" style="display:none">
+
+    <!-- Summary -->
+    <div class="panel full-width">
+      <h2>Portfolio Summary</h2>
+      <div class="summary-grid" id="summaryGrid"></div>
+    </div>
+
+    <div class="dashboard">
+
+      <!-- Holdings Detail -->
+      <div class="panel full-width">
+        <h2>Holdings Detail</h2>
+        <div style="overflow-x:auto">
+          <table id="holdingsTable">
+            <thead>
+              <tr>
+                <th>Symbol</th><th>Price</th><th>Value</th>
+                <th>Gain/Loss</th><th>Volatility</th><th>Sharpe</th><th>Max DD</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Allocation Chart -->
+      <div class="panel">
+        <h2>Allocation</h2>
+        <div class="chart-container">
+          <canvas id="allocationChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Macro Indicators -->
+      <div class="panel">
+        <h2>Macro Environment</h2>
+        <div id="macroContainer"></div>
+      </div>
+
+      <!-- News + Sentiment -->
+      <div class="panel">
+        <h2>News &amp; Sentiment</h2>
+        <div id="newsContainer"></div>
+      </div>
+
+      <!-- AI Insight -->
+      <div class="panel">
+        <h2>AI Insight (FinGPT)</h2>
+        <div id="aiInsight" class="ai-box unavailable">
+          Start the Colab notebook to enable AI insights.
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────
+let holdings = [
+  { symbol: 'AAPL', shares: 10, avg_cost: 170 },
+  { symbol: 'MSFT', shares: 5, avg_cost: 380 },
+  { symbol: 'GOOGL', shares: 3, avg_cost: 140 },
+];
+let allocationChart = null;
+
+// ── Init ───────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  renderHoldings();
+  checkHealth();
+});
+
+async function checkHealth() {
+  try {
+    const r = await fetch('/api/health');
+    const data = await r.json();
+    const dot = document.getElementById('modelStatus');
+    const text = document.getElementById('modelStatusText');
+    if (data.model_server === 'connected') {
+      dot.className = 'status-dot ok';
+      text.textContent = 'FinGPT connected';
+    } else {
+      dot.className = 'status-dot off';
+      text.textContent = 'FinGPT offline (quant metrics still work)';
+    }
+  } catch {
+    document.getElementById('modelStatus').className = 'status-dot off';
+    document.getElementById('modelStatusText').textContent = 'Backend unreachable';
+  }
+}
+
+// ── Holdings UI ────────────────────────────────────────────
+function renderHoldings() {
+  const container = document.getElementById('holdingsContainer');
+  container.innerHTML = `
+    <div class="holdings-grid">
+      <label>Symbol</label><label>Shares</label><label>Avg Cost</label><label></label>
+    </div>
+  ` + holdings.map((h, i) => `
+    <div class="holdings-grid">
+      <input value="${h.symbol}" onchange="holdings[${i}].symbol=this.value" placeholder="AAPL">
+      <input type="number" value="${h.shares}" onchange="holdings[${i}].shares=+this.value" placeholder="10">
+      <input type="number" value="${h.avg_cost}" onchange="holdings[${i}].avg_cost=+this.value" placeholder="150">
+      <button class="btn-danger" onclick="removeHolding(${i})">×</button>
+    </div>
+  `).join('');
+}
+
+function addHolding() {
+  holdings.push({ symbol: '', shares: 0, avg_cost: 0 });
+  renderHoldings();
+}
+
+function removeHolding(i) {
+  holdings.splice(i, 1);
+  renderHoldings();
+}
+
+// ── Analyze ────────────────────────────────────────────────
+async function analyzePortfolio() {
+  const btn = document.getElementById('analyzeBtn');
+  const results = document.getElementById('results');
+
+  const valid = holdings.filter(h => h.symbol && h.shares > 0);
+  if (!valid.length) { alert('Add at least one holding'); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Analyzing...';
+  results.style.display = 'block';
+
+  // Show loaders
+  document.getElementById('summaryGrid').innerHTML = '<div class="loader">Loading market data</div>';
+  document.getElementById('holdingsTable').querySelector('tbody').innerHTML = '<tr><td colspan="7" class="loader">Fetching prices</td></tr>';
+
+  try {
+    const r = await fetch('/api/portfolio/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holdings: valid }),
+    });
+    const data = await r.json();
+    renderResults(data);
+  } catch (e) {
+    document.getElementById('summaryGrid').innerHTML = `<p style="color:var(--red)">Error: ${e.message}</p>`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Analyze Portfolio';
+}
+
+// ── Render Results ─────────────────────────────────────────
+function renderResults(data) {
+  const { analytics, news, macro, ai_insight, model_available } = data;
+  const summary = analytics.summary;
+
+  // Summary cards
+  const gl = summary.total_gain_loss_pct;
+  const glClass = gl >= 0 ? 'positive' : 'negative';
+  document.getElementById('summaryGrid').innerHTML = `
+    <div class="metric-card"><div class="label">Total Value</div><div class="value">$${fmt(summary.total_value)}</div></div>
+    <div class="metric-card"><div class="label">Gain / Loss</div><div class="value ${glClass}">${gl >= 0 ? '+' : ''}${gl}%</div></div>
+    <div class="metric-card"><div class="label">Volatility (Ann.)</div><div class="value">${(summary.portfolio_volatility * 100).toFixed(1)}%</div></div>
+    <div class="metric-card"><div class="label">Sharpe Ratio</div><div class="value">${summary.portfolio_sharpe}</div></div>
+    <div class="metric-card"><div class="label">Diversification</div><div class="value">${(summary.diversification_score * 100).toFixed(0)}%</div></div>
+    <div class="metric-card"><div class="label">Holdings</div><div class="value">${summary.num_holdings}</div></div>
+  `;
+
+  // Holdings table
+  const tbody = document.getElementById('holdingsTable').querySelector('tbody');
+  tbody.innerHTML = analytics.holdings.map(h => {
+    if (h.error) return `<tr><td>${h.symbol}</td><td colspan="6" style="color:var(--red)">${h.error}</td></tr>`;
+    const gc = h.gain_loss_pct >= 0 ? 'positive' : 'negative';
+    return `<tr>
+      <td><strong>${h.symbol}</strong></td>
+      <td>$${h.current_price}</td>
+      <td>$${fmt(h.position_value)}</td>
+      <td class="${gc}">${h.gain_loss_pct >= 0 ? '+' : ''}${h.gain_loss_pct}%</td>
+      <td>${(h.volatility * 100).toFixed(1)}%</td>
+      <td>${h.sharpe_ratio}</td>
+      <td>${(h.max_drawdown * 100).toFixed(1)}%</td>
+    </tr>`;
+  }).join('');
+
+  // Allocation chart
+  const validHoldings = analytics.holdings.filter(h => !h.error && h.position_value > 0);
+  renderAllocationChart(validHoldings);
+
+  // Macro
+  const macroEl = document.getElementById('macroContainer');
+  if (macro && Object.keys(macro).length) {
+    macroEl.innerHTML = Object.entries(macro).map(([key, val]) => {
+      if (val.error) return '';
+      const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="color:var(--muted)">${label}</span>
+        <span><strong>${val.value}</strong> <small style="color:var(--muted)">(${val.date})</small></span>
+      </div>`;
+    }).join('');
+  } else {
+    macroEl.innerHTML = '<p style="color:var(--muted)">Could not fetch macro data</p>';
+  }
+
+  // News
+  const newsEl = document.getElementById('newsContainer');
+  if (news && news.length) {
+    newsEl.innerHTML = news.slice(0, 6).map(a => {
+      let badge = '';
+      const sent = a.fingpt_sentiment?.sentiment || a.overall_sentiment || '';
+      if (sent) {
+        const cls = sent.toLowerCase().includes('pos') ? 'positive' :
+                    sent.toLowerCase().includes('neg') ? 'negative' : 'neutral';
+        badge = `<span class="sentiment-badge sentiment-${cls}">${sent}</span>`;
+      }
+      return `<div class="news-item">
+        <div class="news-title">${a.title} ${badge}</div>
+        <div class="news-meta">${a.source} · ${a.published?.slice(0, 8) || ''}</div>
+      </div>`;
+    }).join('');
+  } else {
+    newsEl.innerHTML = '<p style="color:var(--muted)">No news available</p>';
+  }
+
+  // AI Insight
+  const aiEl = document.getElementById('aiInsight');
+  if (model_available && ai_insight) {
+    aiEl.className = 'ai-box';
+    aiEl.textContent = ai_insight;
+  } else {
+    aiEl.className = 'ai-box unavailable';
+    aiEl.textContent = model_available
+      ? 'No insight generated.'
+      : 'FinGPT model is offline. Start the Colab notebook to enable AI insights.\nQuantitative metrics above are still fully functional.';
+  }
+}
+
+function renderAllocationChart(holdings) {
+  const ctx = document.getElementById('allocationChart');
+  if (allocationChart) allocationChart.destroy();
+
+  const colors = ['#6366f1','#22c55e','#eab308','#ef4444','#06b6d4','#f97316','#8b5cf6','#ec4899'];
+
+  allocationChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: holdings.map(h => h.symbol),
+      datasets: [{
+        data: holdings.map(h => h.position_value),
+        backgroundColor: colors.slice(0, holdings.length),
+        borderWidth: 0,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { color: '#e1e4ed', padding: 12, font: { size: 12 } } },
+      },
+    },
+  });
+}
+
+function fmt(n) {
+  return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+</script>
+</body>
+</html>
