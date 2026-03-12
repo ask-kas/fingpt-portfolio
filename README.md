@@ -16,7 +16,7 @@ on Google Colab, with a local Python backend and web frontend.
 └──────────────────┬──────────────────────────┘
                    │ HTTP (ngrok URL)
 ┌──────────────────▼──────────────────────────┐
-│  Your ThinkPad (Local)                      │
+│   (Local Machine)                           │
 │  ┌───────────────────────────────────────┐  │
 │  │  FastAPI Backend                      │  │
 │  │  - Fetches data from APIs             │  │
