@@ -397,14 +397,23 @@ AAPL_PE_RATIO = 29.0
 def aapl_tariff_impact(weight: float, tariff_rate: float = 0.25, pass_through: float = 0.5) -> dict:
     """Empirical AAPL tariff stress: earnings hit translated to a price hit.
 
-    impact_dollar     = tariff_rate * china_cogs * (1 minus pass_through)
-    earnings_drop_pct = impact_dollar / net_income
-    price_impact_pct  = earnings_drop_pct * pe (negative)
-    portfolio_drag    = weight * price_impact_pct
+    Step 1: dollar hit to earnings from unabsorbed tariff on China COGS.
+        impact_dollar     = tariff_rate * china_cogs * (1 minus pass_through)
+    Step 2: percentage hit to net income.
+        earnings_drop_pct = impact_dollar / net_income
+    Step 3: under a constant P/E assumption, price falls by the same
+    percentage as earnings. This is the standard "multiple stays flat"
+    translation: P = PE * EPS, so if EPS drops x percent, P drops x percent.
+        price_impact_pct  = earnings_drop_pct (negative)
+    Step 4: portfolio drag is the position weight times the price move.
+        portfolio_drag    = weight * price_impact_pct
+
+    AAPL_PE_RATIO is reported as context only; it does not enter the
+    arithmetic because it cancels in the ratio P / EPS.
     """
     impact_bn = tariff_rate * AAPL_CHINA_COGS_BN * (1 - pass_through)
-    earnings_drop = impact_bn / AAPL_NET_INCOME_BN
-    price_drop = -earnings_drop * AAPL_PE_RATIO * 0.01  # PE based multiplier scaled to a percent
+    earnings_drop = impact_bn / AAPL_NET_INCOME_BN  # fraction
+    price_drop = -earnings_drop  # constant PE translation
     portfolio_drag = weight * price_drop
     return {
         "tariff_rate_pct": tariff_rate * 100,
@@ -415,7 +424,8 @@ def aapl_tariff_impact(weight: float, tariff_rate: float = 0.25, pass_through: f
         "assumptions": {
             "china_cogs_bn": AAPL_CHINA_COGS_BN,
             "net_income_bn": AAPL_NET_INCOME_BN,
-            "pe_ratio": AAPL_PE_RATIO,
+            "pe_ratio_reference": AAPL_PE_RATIO,
+            "translation": "constant P/E",
         },
     }
 
