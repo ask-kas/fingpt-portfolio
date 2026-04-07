@@ -7,8 +7,11 @@ The Colab notebook exposes a simple HTTP endpoint:
 """
 
 import httpx
+import logging
 import os
 from typing import Optional
+
+logger = logging.getLogger("fingpt.model")
 
 # ngrok free tier shows a browser warning page — this header bypasses it
 NGROK_HEADERS = {
@@ -33,7 +36,8 @@ class FinGPTClient:
                 )
                 self._available = r.status_code == 200
                 return self._available
-        except Exception:
+        except Exception as e:
+            logger.debug("Model health check failed: %s", e)
             self._available = False
             return False
 
@@ -74,6 +78,7 @@ class FinGPTClient:
                 r.raise_for_status()
                 return r.json().get("results", [])
         except Exception as e:
+            logger.error("Batch sentiment failed: %s", e)
             return [{"error": str(e), "headline": h} for h in headlines]
 
     async def _call(self, task: str, text: str) -> dict:
@@ -87,11 +92,14 @@ class FinGPTClient:
                 )
                 r.raise_for_status()
                 return r.json()
-        except httpx.ConnectError:
+        except httpx.ConnectError as e:
+            logger.warning("Model server unreachable for task '%s': %s", task, e)
             return {"error": "Colab model server unreachable. Is the notebook running?"}
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as e:
+            logger.warning("Model inference timed out for task '%s': %s", task, e)
             return {"error": "Model inference timed out (T4 can be slow on long prompts)"}
         except Exception as e:
+            logger.error("Model call failed for task '%s': %s", task, e)
             return {"error": str(e)}
 
 

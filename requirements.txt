@@ -5,3 +5,5 @@ python-dotenv==1.0.1
 pandas==2.2.3
 numpy==1.26.4
 yfinance==1.2.0
+scipy>=1.11.0
+PyPortfolioOpt>=1.5.5

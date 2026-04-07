@@ -6,70 +6,88 @@ FRED: Free API key required.
 SEC EDGAR: No key, just a User-Agent string.
 """
 
+import asyncio
 import httpx
+import logging
 import os
 import yfinance as yf
 from datetime import datetime, timedelta
+from functools import partial
+
+from backend.cache import cache
+
+logger = logging.getLogger("fingpt.data")
+
+
+async def _run_sync(func, *args, **kwargs):
+    """Run a blocking function in the default thread pool executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, partial(func, *args, **kwargs))
 
 
 class YFinanceClient:
     """Fetches stock quotes, daily prices, and news from Yahoo Finance via yfinance."""
 
-    async def get_quote(self, symbol: str) -> dict:
-        """Get real-time quote for a symbol."""
-        try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
-            hist = ticker.history(period="2d")
+    # Crypto shorthand -> yfinance ticker mapping
+    CRYPTO_MAP = {
+        "BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD",
+        "ADA": "ADA-USD", "DOT": "DOT-USD", "MATIC": "MATIC-USD",
+        "AVAX": "AVAX-USD", "LINK": "LINK-USD", "XRP": "XRP-USD",
+        "DOGE": "DOGE-USD", "BNB": "BNB-USD", "LTC": "LTC-USD",
+    }
 
-            if hist.empty:
-                return {"symbol": symbol, "error": "No data found"}
+    def normalize_symbol(self, symbol: str) -> str:
+        """Convert shorthand crypto symbols to yfinance format."""
+        upper = symbol.upper().strip()
+        return self.CRYPTO_MAP.get(upper, upper)
 
-            current = float(hist["Close"].iloc[-1])
-            prev = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else current
-            change = current - prev
-            change_pct = (change / prev * 100) if prev else 0
+    # ── Sync internals (run in thread pool) ──────────────────
 
-            return {
-                "symbol": symbol,
-                "price": round(current, 2),
-                "change": round(change, 2),
-                "change_pct": f"{change_pct:.2f}%",
-                "volume": int(hist["Volume"].iloc[-1]),
-                "latest_day": str(hist.index[-1].date()),
-                "name": info.get("shortName", symbol),
-            }
-        except Exception as e:
-            return {"symbol": symbol, "error": str(e)}
+    def _get_quote_sync(self, symbol: str) -> dict:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        hist = ticker.history(period="2d")
 
-    async def get_daily(self, symbol: str, days: int = 100) -> list[dict]:
-        """Get daily OHLCV data."""
-        try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period=f"{days}d")
+        if hist.empty:
+            return {"symbol": symbol, "error": "No data found"}
 
-            if hist.empty:
-                return []
+        current = float(hist["Close"].iloc[-1])
+        prev = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else current
+        change = current - prev
+        change_pct = (change / prev * 100) if prev else 0
 
-            rows = []
-            for date, row in hist.iterrows():
-                rows.append({
-                    "date": str(date.date()),
-                    "open": round(float(row["Open"]), 2),
-                    "high": round(float(row["High"]), 2),
-                    "low": round(float(row["Low"]), 2),
-                    "close": round(float(row["Close"]), 2),
-                    "volume": int(row["Volume"]),
-                })
+        return {
+            "symbol": symbol,
+            "price": round(current, 2),
+            "change": round(change, 2),
+            "change_pct": f"{change_pct:.2f}%",
+            "volume": int(hist["Volume"].iloc[-1]),
+            "latest_day": str(hist.index[-1].date()),
+            "name": info.get("shortName", symbol),
+        }
 
-            # Return newest first
-            rows.reverse()
-            return rows
-        except Exception as e:
+    def _get_daily_sync(self, symbol: str, days: int = 100) -> list[dict]:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period=f"{days}d")
+
+        if hist.empty:
             return []
 
-    async def get_news(self, symbols: list[str], limit: int = 10) -> list[dict]:
-        """Get news for given symbols."""
+        rows = []
+        for date, row in hist.iterrows():
+            rows.append({
+                "date": str(date.date()),
+                "open": round(float(row["Open"]), 2),
+                "high": round(float(row["High"]), 2),
+                "low": round(float(row["Low"]), 2),
+                "close": round(float(row["Close"]), 2),
+                "volume": int(row["Volume"]),
+            })
+
+        rows.reverse()  # newest first
+        return rows
+
+    def _get_news_sync(self, symbols: list[str], limit: int = 10) -> list[dict]:
         articles = []
         seen_titles = set()
 
@@ -81,19 +99,39 @@ class YFinanceClient:
                     continue
 
                 for item in news:
-                    title = item.get("title", "")
-                    if title in seen_titles:
+                    # yfinance 1.2.0 nests data under "content"
+                    content = item.get("content", item)
+
+                    title = content.get("title", "") or item.get("title", "")
+                    if not title or title in seen_titles:
                         continue
                     seen_titles.add(title)
 
-                    published = item.get("providerPublishTime", "")
+                    # Extract publish date
+                    published = content.get("pubDate", "") or item.get("providerPublishTime", "")
                     if isinstance(published, (int, float)):
-                        published = datetime.fromtimestamp(published).strftime("%Y%m%d")
+                        published = datetime.fromtimestamp(published).strftime("%Y-%m-%d")
+                    elif isinstance(published, str) and "T" in published:
+                        published = published[:10]  # "2026-04-06T14:30:00Z" -> "2026-04-06"
+
+                    # Extract URL
+                    canonical = content.get("canonicalUrl", {})
+                    url = canonical.get("url", "") if isinstance(canonical, dict) else str(canonical)
+                    if not url:
+                        url = item.get("link", "")
+
+                    # Extract source
+                    provider = content.get("provider", {})
+                    source = provider.get("displayName", "") if isinstance(provider, dict) else item.get("publisher", "")
+
+                    # Extract summary
+                    summary = content.get("summary", "") or item.get("summary", "")
 
                     articles.append({
                         "title": title,
-                        "summary": item.get("summary", "")[:200] if item.get("summary") else "",
-                        "source": item.get("publisher", ""),
+                        "url": url,
+                        "summary": summary[:200] if summary else "",
+                        "source": source,
                         "published": str(published),
                         "overall_sentiment": "",
                         "ticker_sentiments": [{"ticker": sym, "score": "", "label": ""}],
@@ -101,13 +139,114 @@ class YFinanceClient:
 
                     if len(articles) >= limit:
                         break
-            except Exception:
+            except Exception as e:
+                logger.warning("Failed to fetch news for %s: %s", sym, e)
                 continue
 
             if len(articles) >= limit:
                 break
 
         return articles[:limit]
+
+    # ── Async public API (with caching) ──────────────────────
+
+    async def get_quote(self, symbol: str) -> dict:
+        """Get real-time quote for a symbol."""
+        cache_key = f"quote:{symbol}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            result = await _run_sync(self._get_quote_sync, symbol)
+            if "error" not in result:
+                cache.set(cache_key, result, ttl_seconds=300)  # 5 min
+            return result
+        except Exception as e:
+            logger.error("Failed to fetch quote for %s: %s", symbol, e)
+            return {"symbol": symbol, "error": str(e)}
+
+    async def get_daily(self, symbol: str, days: int = 100) -> list[dict]:
+        """Get daily OHLCV data."""
+        cache_key = f"daily:{symbol}:{days}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            result = await _run_sync(self._get_daily_sync, symbol, days)
+            if result:
+                cache.set(cache_key, result, ttl_seconds=3600)  # 1 hour
+            return result
+        except Exception as e:
+            logger.error("Failed to fetch daily data for %s: %s", symbol, e)
+            return []
+
+    async def get_news(self, symbols: list[str], limit: int = 10) -> list[dict]:
+        """Get news for given symbols."""
+        cache_key = f"news:{','.join(sorted(symbols))}:{limit}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            result = await _run_sync(self._get_news_sync, symbols, limit)
+            if result:
+                cache.set(cache_key, result, ttl_seconds=900)  # 15 min
+            return result
+        except Exception as e:
+            logger.error("Failed to fetch news: %s", e)
+            return []
+
+    # ── Options chain ────────────────────────────────────────
+
+    def _get_options_sync(self, symbol: str, expiration: str = None) -> dict:
+        import numpy as np
+        ticker = yf.Ticker(symbol)
+        expirations = ticker.options
+        if not expirations:
+            return {"symbol": symbol, "error": "No options data available"}
+
+        exp = expiration if expiration and expiration in expirations else expirations[0]
+        chain = ticker.option_chain(exp)
+
+        def format_chain(df):
+            rows = []
+            for _, row in df.iterrows():
+                rows.append({
+                    "strike": float(row["strike"]),
+                    "lastPrice": float(row["lastPrice"]),
+                    "bid": float(row["bid"]),
+                    "ask": float(row["ask"]),
+                    "volume": int(row["volume"]) if not np.isnan(row["volume"]) else 0,
+                    "openInterest": int(row["openInterest"]) if not np.isnan(row["openInterest"]) else 0,
+                    "impliedVolatility": round(float(row["impliedVolatility"]), 4),
+                })
+            return rows
+
+        return {
+            "symbol": symbol,
+            "expiration": exp,
+            "expirations": list(expirations),
+            "calls": format_chain(chain.calls),
+            "puts": format_chain(chain.puts),
+        }
+
+    async def get_options(self, symbol: str, expiration: str = None) -> dict:
+        """Get options chain for a symbol."""
+        cache_key = f"options:{symbol}:{expiration or 'nearest'}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            result = await _run_sync(self._get_options_sync, symbol, expiration)
+            if "error" not in result:
+                cache.set(cache_key, result, ttl_seconds=900)  # 15 min
+            return result
+        except Exception as e:
+            logger.error("Failed to fetch options for %s: %s", symbol, e)
+            return {"symbol": symbol, "error": str(e)}
 
 
 class FREDClient:
@@ -145,19 +284,28 @@ class FREDClient:
             ]
 
     async def get_macro_snapshot(self) -> dict:
-        """Get latest value of all key macro indicators."""
-        snapshot = {}
-        for name, series_id in self.SERIES.items():
+        """Get latest value of all key macro indicators (fetched in parallel)."""
+        cached = cache.get("macro_snapshot")
+        if cached is not None:
+            return cached
+
+        async def _fetch_one(name, series_id):
             try:
                 obs = await self.get_indicator(series_id, limit=1)
                 if obs:
-                    snapshot[name] = {
+                    return name, {
                         "value": obs[0]["value"],
                         "date": obs[0]["date"],
                         "series_id": series_id,
                     }
+                return name, {"error": "No observations"}
             except Exception as e:
-                snapshot[name] = {"error": str(e)}
+                logger.error("Failed to fetch FRED indicator %s (%s): %s", name, series_id, e)
+                return name, {"error": str(e)}
+
+        results = await asyncio.gather(*[_fetch_one(n, s) for n, s in self.SERIES.items()])
+        snapshot = dict(results)
+        cache.set("macro_snapshot", snapshot, ttl_seconds=14400)  # 4 hours
         return snapshot
 
 
