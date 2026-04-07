@@ -1,20 +1,63 @@
 """
-advanced_analytics.py — Institutional-grade portfolio analytics.
+advanced_analytics.py — Institutional grade portfolio analytics (v5 spec).
 
-Monte Carlo VaR/CVaR, Efficient Frontier, Correlation Matrix, Stress Testing.
+Monte Carlo VaR/CVaR uses Cholesky decomposition for correlated draws and
+a Student t marginal distribution to capture tail risk in tech equities.
+The optimizer uses box constraints and a Black Litterman style mean
+estimator. Stress testing includes a reverse stress test and uses the
+same canonical OLS beta as the rest of the system.
 """
 
+from __future__ import annotations
+
 import logging
+import math
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.optimize import minimize_scalar
+
+from backend.portfolio import (
+    TRADING_DAYS_STOCKS,
+    beta_ols,
+    log_returns_from_prices,
+)
 
 logger = logging.getLogger("fingpt.analytics")
 
 
-# ── Monte Carlo Simulation + VaR/CVaR ────────────────────────
+# ── Macro helpers (spec module 12) ───────────────────────────
+
+def cpi_yoy_pct(cpi_current: float, cpi_year_ago: float) -> float:
+    """CPI year over year inflation rate as a percentage.
+
+    CPI_YoY = ((CPI_t / CPI_{t minus 12}) minus 1) * 100
+    """
+    if cpi_year_ago <= 0:
+        return 0.0
+    return float((cpi_current / cpi_year_ago - 1.0) * 100.0)
+
+
+# ── Monte Carlo VaR / CVaR (spec module 5) ───────────────────
+
+def _fit_student_t_dof(returns: np.ndarray, default: float = 5.0) -> float:
+    """Fit Student t degrees of freedom to a return series via MLE.
+
+    Falls back to the default if there is too little data or the fit
+    is not believable.
+    """
+    if returns.size < 30:
+        return default
+    try:
+        df, _, _ = stats.t.fit(returns, floc=0)
+        if df < 2.5 or df > 30:
+            return default
+        return float(df)
+    except Exception:
+        return default
+
 
 def monte_carlo_simulation(
     daily_data: dict[str, list[dict]],
@@ -22,21 +65,39 @@ def monte_carlo_simulation(
     n_simulations: int = 10_000,
     horizon_days: int = 30,
 ) -> dict:
+    """Monte Carlo VaR/CVaR using Cholesky + Student t marginals.
+
+    Step 1: Build the daily log return matrix and align by length.
+    Step 2: Estimate mean vector, covariance matrix, and t degrees of freedom.
+    Step 3: Cholesky factor L of the covariance matrix.
+    Step 4: For each draw, sample iid t variables, multiply by L,
+            add the mean vector, then compound across the horizon.
+    Step 5: Build the portfolio P&L distribution and read VaR / CVaR
+            off the empirical quantiles.
     """
-    Run Monte Carlo simulation on portfolio.
+    weights, returns_matrix, symbols = _build_portfolio_matrix(daily_data, holdings)
+    if returns_matrix is None or returns_matrix.shape[0] < 30:
+        return {"error": "Insufficient price history for Monte Carlo (need 30 days minimum)"}
 
-    Returns VaR (95%, 99%), CVaR, simulated final values distribution,
-    and percentile paths for visualization.
-    """
-    weights, returns_matrix = _build_portfolio_matrix(daily_data, holdings)
-    if returns_matrix is None or len(returns_matrix) < 20:
-        return {"error": "Insufficient price data for simulation"}
+    n_assets = returns_matrix.shape[1]
 
-    # Portfolio parameters
-    mean_returns = np.mean(returns_matrix, axis=0)
-    cov_matrix = np.cov(returns_matrix.T)
+    mean_vector = np.mean(returns_matrix, axis=0)
+    cov_matrix = np.cov(returns_matrix, rowvar=False, ddof=1)
+    if cov_matrix.ndim == 0:
+        cov_matrix = np.array([[float(cov_matrix)]])
 
-    # Current portfolio value
+    # Per asset Student t degrees of freedom, then take the conservative minimum.
+    per_asset_dof = [_fit_student_t_dof(returns_matrix[:, i]) for i in range(n_assets)]
+    nu = float(min(per_asset_dof))
+    nu = max(2.5, min(nu, 30.0))
+
+    # Cholesky. If the covariance matrix is degenerate, fall back to a tiny
+    # ridge term so we still get a usable factorization.
+    try:
+        L = np.linalg.cholesky(cov_matrix + 1e-10 * np.eye(n_assets))
+    except np.linalg.LinAlgError:
+        return {"error": "Covariance matrix is not positive definite"}
+
     total_value = sum(
         h["shares"] * _latest_price(daily_data.get(h["symbol"], []))
         for h in holdings
@@ -44,70 +105,101 @@ def monte_carlo_simulation(
     if total_value <= 0:
         return {"error": "Portfolio value is zero"}
 
-    # Simulate paths
-    np.random.seed(42)
-    simulated_returns = np.random.multivariate_normal(
-        mean_returns, cov_matrix, size=(n_simulations, horizon_days)
-    )
+    rng = np.random.default_rng(seed=42)
 
-    # Portfolio return for each simulation day
-    portfolio_daily = simulated_returns @ weights
-    cumulative = np.cumprod(1 + portfolio_daily, axis=1)
-    final_values = total_value * cumulative[:, -1]
-    final_returns = (final_values / total_value - 1) * 100  # percentage
+    # iid Student t draws then correlated via L. Scale factor sqrt((nu-2)/nu)
+    # makes the resulting covariance match cov_matrix exactly.
+    scale = math.sqrt(max(nu - 2.0, 1e-6) / nu) if nu > 2 else 1.0
+    z = rng.standard_t(df=nu, size=(n_simulations, horizon_days, n_assets)) * scale
 
-    # VaR and CVaR
-    var_95 = float(np.percentile(final_returns, 5))
-    var_99 = float(np.percentile(final_returns, 1))
-    cvar_95 = float(np.mean(final_returns[final_returns <= np.percentile(final_returns, 5)]))
-    cvar_99 = float(np.mean(final_returns[final_returns <= np.percentile(final_returns, 1)]))
+    # Apply the Cholesky factor day by day. Vectorised over (sims, days).
+    # epsilon[s, d, :] = L @ z[s, d, :]
+    correlated = z @ L.T
+    daily_log_rets = mean_vector + correlated  # shape (sims, days, assets)
 
-    # Percentile paths for fan chart
-    all_paths = total_value * cumulative
+    # Portfolio daily log return is the weight dot product.
+    port_daily_log = daily_log_rets @ weights  # (sims, days)
+    cumulative_log = np.sum(port_daily_log, axis=1)
+    cumulative_simple = np.exp(cumulative_log) - 1.0  # fraction
+    pnl = total_value * cumulative_simple
+
+    final_returns_pct = cumulative_simple * 100
+
+    var_95 = float(np.percentile(final_returns_pct, 5))
+    var_99 = float(np.percentile(final_returns_pct, 1))
+    tail_5 = final_returns_pct[final_returns_pct <= var_95]
+    tail_1 = final_returns_pct[final_returns_pct <= var_99]
+    cvar_95 = float(np.mean(tail_5)) if tail_5.size else var_95
+    cvar_99 = float(np.mean(tail_1)) if tail_1.size else var_99
+
+    # Percentile fan chart for the visualization.
+    cum_paths = np.exp(np.cumsum(port_daily_log, axis=1))
+    all_value_paths = total_value * cum_paths
     percentile_paths = {}
     for p in [5, 25, 50, 75, 95]:
-        path = np.percentile(all_paths, p, axis=0)
+        path = np.percentile(all_value_paths, p, axis=0)
         percentile_paths[f"p{p}"] = [round(float(v), 2) for v in path]
 
-    # Histogram bins
-    hist_counts, hist_edges = np.histogram(final_returns, bins=50)
+    hist_counts, hist_edges = np.histogram(final_returns_pct, bins=50)
     histogram = {
         "counts": hist_counts.tolist(),
         "edges": [round(float(e), 2) for e in hist_edges.tolist()],
     }
 
+    # Diagnostics for the test suite (Test 6) and the info modal.
+    historical_corr = np.corrcoef(returns_matrix, rowvar=False)
+    if historical_corr.ndim == 0:
+        historical_corr = np.array([[1.0]])
+
+    # Reshape simulated daily returns into (sims*days, assets) to extract the
+    # marginal correlation structure.
+    flat = daily_log_rets.reshape(-1, n_assets)
+    simulated_corr = np.corrcoef(flat, rowvar=False)
+    if simulated_corr.ndim == 0:
+        simulated_corr = np.array([[1.0]])
+
     return {
         "total_value": round(total_value, 2),
         "horizon_days": horizon_days,
         "n_simulations": n_simulations,
+        "method": "cholesky_student_t",
+        "student_t_dof": round(nu, 2),
+        "symbols": symbols,
         "var_95": round(var_95, 2),
         "var_99": round(var_99, 2),
         "cvar_95": round(cvar_95, 2),
         "cvar_99": round(cvar_99, 2),
-        "expected_return": round(float(np.mean(final_returns)), 2),
-        "median_return": round(float(np.median(final_returns)), 2),
-        "best_case": round(float(np.max(final_returns)), 2),
-        "worst_case": round(float(np.min(final_returns)), 2),
-        "histogram": histogram,
-        "percentile_paths": percentile_paths,
         "var_95_dollar": round(total_value * var_95 / 100, 2),
         "var_99_dollar": round(total_value * var_99 / 100, 2),
+        "cvar_95_dollar": round(total_value * cvar_95 / 100, 2),
+        "cvar_99_dollar": round(total_value * cvar_99 / 100, 2),
+        "expected_return": round(float(np.mean(final_returns_pct)), 2),
+        "median_return": round(float(np.median(final_returns_pct)), 2),
+        "best_case": round(float(np.max(final_returns_pct)), 2),
+        "worst_case": round(float(np.min(final_returns_pct)), 2),
+        "histogram": histogram,
+        "percentile_paths": percentile_paths,
+        "debug_historical_correlation": historical_corr.tolist(),
+        "debug_simulated_correlation": simulated_corr.tolist(),
     }
 
 
-# ── Efficient Frontier / Markowitz ────────────────────────────
+# ── Optimizer (spec module 8) ────────────────────────────────
 
 def efficient_frontier(
     daily_data: dict[str, list[dict]],
     holdings: list[dict],
-    risk_free_rate: float = 0.05,
+    risk_free_rate: float = 0.0435,
     n_points: int = 50,
+    weight_min: float = 0.05,
+    weight_max: float = 0.60,
 ) -> dict:
-    """
-    Calculate the efficient frontier and optimal portfolios.
+    """Efficient frontier with box constraints and Black Litterman style means.
 
-    Returns frontier curve, current allocation position,
-    max-Sharpe portfolio, and min-volatility portfolio.
+    Expected returns are not the raw historical means. Instead the implied
+    equilibrium returns are computed from the current market cap (or value)
+    weights, then blended with the historical mean. This stops the optimizer
+    producing the corner solution that the v4 dashboard suffered from.
     """
     symbols = [h["symbol"] for h in holdings]
     returns_df = _build_returns_dataframe(daily_data, symbols)
@@ -119,53 +211,68 @@ def efficient_frontier(
         return {"error": "Insufficient data points for optimization"}
 
     try:
-        from pypfopt import expected_returns, risk_models, EfficientFrontier
+        from pypfopt import EfficientFrontier, risk_models, expected_returns
 
-        # Calculate expected returns and covariance
-        mu = expected_returns.mean_historical_return(
-            returns_df, compounding=True, frequency=252
-        )
-        S = risk_models.sample_cov(returns_df, frequency=252)
+        # Annualised covariance with Ledoit Wolf shrinkage for stability.
+        S = risk_models.CovarianceShrinkage(returns_df, frequency=TRADING_DAYS_STOCKS).ledoit_wolf()
 
-        # Current weights
-        total_value = 0
+        # Current value weights.
+        total_value = 0.0
         current_weights = {}
         for h in holdings:
             price = _latest_price(daily_data.get(h["symbol"], []))
             val = h["shares"] * price
             current_weights[h["symbol"]] = val
             total_value += val
-
         if total_value > 0:
             current_weights = {k: v / total_value for k, v in current_weights.items()}
 
-        # Current portfolio performance
-        cw = np.array([current_weights.get(s, 0) for s in symbols])
-        current_ret = float(cw @ mu.values) if len(mu) == len(cw) else 0
-        current_vol = float(np.sqrt(cw @ S.values @ cw)) if len(cw) == S.shape[0] else 0
+        # Black Litterman style implied equilibrium returns.
+        # Pi = lambda * Sigma * w_market with lambda = 2.5 risk aversion.
+        cw_array = np.array([current_weights.get(s, 1.0 / len(symbols)) for s in returns_df.columns])
+        risk_aversion = 2.5
+        pi = risk_aversion * S.values @ cw_array
 
-        # Max Sharpe portfolio
-        ef_sharpe = EfficientFrontier(mu, S)
+        # Blend with historical mean to stabilise. Half weight each.
+        mu_hist = expected_returns.mean_historical_return(
+            returns_df, compounding=True, frequency=TRADING_DAYS_STOCKS
+        ).values
+        mu_blend = 0.5 * pi + 0.5 * mu_hist
+        mu_series = pd.Series(mu_blend, index=returns_df.columns)
+
+        n_assets = len(returns_df.columns)
+        eff_min = max(weight_min, 0.0)
+        eff_max = min(weight_max, 1.0)
+        if eff_min * n_assets > 1.0:
+            eff_min = 1.0 / (n_assets * 2)
+        if eff_max * n_assets < 1.0:
+            eff_max = 1.0 / n_assets
+
+        # Current portfolio performance.
+        cw_aligned = np.array([current_weights.get(s, 0) for s in returns_df.columns])
+        current_ret = float(cw_aligned @ mu_series.values)
+        current_vol = float(math.sqrt(cw_aligned @ S.values @ cw_aligned))
+
+        # Max Sharpe.
+        ef_sharpe = EfficientFrontier(mu_series, S, weight_bounds=(eff_min, eff_max))
         ef_sharpe.max_sharpe(risk_free_rate=risk_free_rate)
         sharpe_weights = ef_sharpe.clean_weights()
         sharpe_perf = ef_sharpe.portfolio_performance(risk_free_rate=risk_free_rate)
 
-        # Min volatility portfolio
-        ef_min = EfficientFrontier(mu, S)
-        ef_min.min_volatility()
-        min_vol_weights = ef_min.clean_weights()
-        min_vol_perf = ef_min.portfolio_performance(risk_free_rate=risk_free_rate)
+        # Min vol.
+        ef_min_vol = EfficientFrontier(mu_series, S, weight_bounds=(eff_min, eff_max))
+        ef_min_vol.min_volatility()
+        min_vol_weights = ef_min_vol.clean_weights()
+        min_vol_perf = ef_min_vol.portfolio_performance(risk_free_rate=risk_free_rate)
 
-        # Generate frontier curve
+        # Frontier sweep.
         frontier_points = []
-        # Get the range of target returns
         min_ret = float(min_vol_perf[0])
         max_ret = float(sharpe_perf[0]) * 1.5
-
         target_returns = np.linspace(min_ret, max_ret, n_points)
         for target in target_returns:
             try:
-                ef_point = EfficientFrontier(mu, S)
+                ef_point = EfficientFrontier(mu_series, S, weight_bounds=(eff_min, eff_max))
                 ef_point.efficient_return(float(target))
                 perf = ef_point.portfolio_performance(risk_free_rate=risk_free_rate)
                 frontier_points.append({
@@ -195,7 +302,13 @@ def efficient_frontier(
                 "sharpe": round(float(min_vol_perf[2]), 3),
                 "weights": {k: round(v * 100, 1) for k, v in min_vol_weights.items() if v > 0.001},
             },
-            "symbols": symbols,
+            "constraints": {
+                "weight_min_pct": round(eff_min * 100, 2),
+                "weight_max_pct": round(eff_max * 100, 2),
+            },
+            "expected_returns_method": "black_litterman_blended",
+            "covariance_method": "ledoit_wolf_shrunk",
+            "symbols": list(returns_df.columns),
         }
 
     except Exception as e:
@@ -203,27 +316,26 @@ def efficient_frontier(
         return {"error": str(e)}
 
 
-# ── Correlation Matrix ────────────────────────────────────────
+# ── Correlation (spec module 9) ──────────────────────────────
 
 def correlation_matrix(
     daily_data: dict[str, list[dict]],
     symbols: list[str],
 ) -> dict:
-    """
-    Calculate pairwise correlation matrix between holdings.
-
-    Returns matrix values and labels for heatmap rendering.
-    """
+    """Pairwise correlation plus 60 day rolling correlation (spec item 18)."""
     returns_df = _build_returns_dataframe(daily_data, symbols)
 
     if returns_df is None or returns_df.shape[1] < 2:
         return {"error": "Need at least 2 holdings with data"}
 
-    corr = returns_df.corr()
+    log_returns_df = np.log(returns_df / returns_df.shift(1)).dropna()
+    if log_returns_df.shape[0] < 5:
+        return {"error": "Need more data for correlation"}
+
+    corr = log_returns_df.corr()
     labels = list(corr.columns)
     matrix = [[round(float(corr.iloc[i, j]), 3) for j in range(len(labels))] for i in range(len(labels))]
 
-    # Average correlation (excluding diagonal)
     n = len(labels)
     if n > 1:
         off_diag = [corr.iloc[i, j] for i in range(n) for j in range(n) if i != j]
@@ -231,59 +343,74 @@ def correlation_matrix(
     else:
         avg_corr = 1.0
 
+    # 60 day rolling correlation for the first pair (used for the sparkline chart).
+    rolling = {}
+    if n >= 2 and len(log_returns_df) > 60:
+        for i in range(n):
+            for j in range(i + 1, n):
+                key = f"{labels[i]}_{labels[j]}"
+                series = log_returns_df.iloc[:, i].rolling(60).corr(log_returns_df.iloc[:, j])
+                series = series.dropna()
+                rolling[key] = {
+                    "dates": [d.strftime("%Y-%m-%d") for d in series.index],
+                    "values": [round(float(v), 3) for v in series.values],
+                }
+
     return {
         "labels": labels,
         "matrix": matrix,
         "avg_correlation": round(avg_corr, 3),
         "interpretation": _interpret_correlation(avg_corr),
+        "rolling_60d": rolling,
+        "window_days": 252,
     }
 
 
 def _interpret_correlation(avg: float) -> str:
     if avg > 0.7:
-        return "Very high — holdings move together. Diversification is weak."
+        return "Very high. Holdings move together. Diversification benefit is weak."
     elif avg > 0.5:
-        return "Moderate-high — some diversification, but concentrated risk remains."
+        return "Moderate to high. Some diversification but concentrated risk remains."
     elif avg > 0.3:
-        return "Moderate — reasonable diversification across holdings."
+        return "Moderate. Reasonable diversification across holdings."
     elif avg > 0.0:
-        return "Low — good diversification. Holdings behave independently."
+        return "Low. Good diversification. Holdings behave fairly independently."
     else:
-        return "Negative — excellent diversification. Holdings offset each other."
+        return "Negative. Excellent diversification. Holdings offset each other."
 
 
-# ── Stress Testing / Scenario Analysis ────────────────────────
+# ── Stress testing (spec module 10) ──────────────────────────
 
 HISTORICAL_SCENARIOS = {
     "2008_gfc": {
         "name": "2008 Global Financial Crisis",
-        "description": "Sept-Nov 2008: Lehman collapse, banking crisis",
+        "description": "Sept to Nov 2008. Lehman collapse and banking crisis.",
         "spy_return": -0.389,
-        "period": "2008-09-01 to 2009-03-09",
+        "period": "2008 09 01 to 2009 03 09",
     },
     "covid_crash": {
-        "name": "COVID-19 Crash",
-        "description": "Feb-Mar 2020: Pandemic selloff",
+        "name": "COVID 19 Crash",
+        "description": "Feb to Mar 2020. Pandemic selloff.",
         "spy_return": -0.337,
-        "period": "2020-02-19 to 2020-03-23",
+        "period": "2020 02 19 to 2020 03 23",
     },
     "2022_rate_hikes": {
         "name": "2022 Rate Hike Selloff",
-        "description": "Jan-Oct 2022: Aggressive Fed tightening",
+        "description": "Jan to Oct 2022. Aggressive Fed tightening.",
         "spy_return": -0.252,
-        "period": "2022-01-03 to 2022-10-12",
+        "period": "2022 01 03 to 2022 10 12",
     },
     "dot_com": {
-        "name": "Dot-Com Bust",
-        "description": "Mar 2000 - Oct 2002: Tech bubble burst",
+        "name": "Dot Com Bust",
+        "description": "Mar 2000 to Oct 2002. Tech bubble burst.",
         "spy_return": -0.491,
-        "period": "2000-03-24 to 2002-10-09",
+        "period": "2000 03 24 to 2002 10 09",
     },
     "flash_crash_2010": {
         "name": "2010 Flash Crash",
-        "description": "May 6, 2010: Sudden 9% drop in minutes",
+        "description": "May 6 2010. Sudden 9 percent drop in minutes.",
         "spy_return": -0.069,
-        "period": "2010-05-06",
+        "period": "2010 05 06",
     },
 }
 
@@ -292,44 +419,51 @@ def stress_test(
     daily_data: dict[str, list[dict]],
     holdings: list[dict],
     custom_shock_pct: Optional[float] = None,
+    market_data: Optional[list[dict]] = None,
+    loss_threshold_pct: float = 20.0,
 ) -> dict:
-    """
-    Stress test portfolio against historical crises and custom scenarios.
+    """Beta adjusted stress test using the canonical OLS beta against SPY.
 
-    Uses beta-adjusted returns: stock_loss = beta * market_loss.
+    Also returns a reverse stress test: what market drop produces a given
+    portfolio loss threshold (default 20 percent).
     """
-    weights, returns_matrix = _build_portfolio_matrix(daily_data, holdings)
+    weights, returns_matrix, valid_symbols = _build_portfolio_matrix(daily_data, holdings)
     if returns_matrix is None:
         return {"error": "Insufficient data for stress testing"}
 
-    symbols = [h["symbol"] for h in holdings]
     total_value = sum(
         h["shares"] * _latest_price(daily_data.get(h["symbol"], []))
         for h in holdings
     )
 
-    # Calculate beta for each holding vs portfolio
-    portfolio_returns = returns_matrix @ weights
+    market_log = np.array([])
+    if market_data:
+        market_log = log_returns_from_prices([d["close"] for d in market_data])
+
+    # Per holding beta against SPY using the canonical OLS beta source.
     betas = {}
-    for i, sym in enumerate(symbols):
-        if returns_matrix.shape[1] > i:
-            stock_returns = returns_matrix[:, i]
-            cov = np.cov(stock_returns, portfolio_returns)[0, 1]
-            var = np.var(portfolio_returns)
+    for i, sym in enumerate(valid_symbols):
+        stock_log = returns_matrix[:, i]
+        if market_log.size:
+            b = beta_ols(stock_log, market_log)
+            betas[sym] = float(b) if b is not None else 1.0
+        else:
+            # Fall back to portfolio beta if SPY missing.
+            port_returns = returns_matrix @ weights
+            cov = np.cov(stock_log, port_returns, ddof=1)[0, 1]
+            var = np.var(port_returns, ddof=1)
             betas[sym] = float(cov / var) if var > 0 else 1.0
+
+    portfolio_beta = float(np.sum(weights * np.array([betas.get(s, 1.0) for s in valid_symbols])))
 
     results = []
     for key, scenario in HISTORICAL_SCENARIOS.items():
         market_drop = scenario["spy_return"]
-        # Beta-adjusted portfolio loss
-        portfolio_loss = sum(
-            weights[i] * betas.get(sym, 1.0) * market_drop
-            for i, sym in enumerate(symbols)
-        )
+        portfolio_loss = portfolio_beta * market_drop
         dollar_loss = total_value * portfolio_loss
 
         per_holding = []
-        for i, sym in enumerate(symbols):
+        for i, sym in enumerate(valid_symbols):
             h = next((h for h in holdings if h["symbol"] == sym), None)
             if h:
                 pos_val = h["shares"] * _latest_price(daily_data.get(sym, []))
@@ -352,17 +486,13 @@ def stress_test(
             "per_holding": per_holding,
         })
 
-    # Custom scenario
     if custom_shock_pct is not None:
         shock = custom_shock_pct / 100
-        portfolio_loss = sum(
-            weights[i] * betas.get(sym, 1.0) * shock
-            for i, sym in enumerate(symbols)
-        )
+        portfolio_loss = portfolio_beta * shock
         results.append({
             "scenario": "custom",
-            "name": f"Custom Shock ({custom_shock_pct}%)",
-            "description": f"User-defined market move of {custom_shock_pct}%",
+            "name": f"Custom shock {custom_shock_pct} percent",
+            "description": f"User defined market move of {custom_shock_pct} percent.",
             "period": "Hypothetical",
             "market_return_pct": custom_shock_pct,
             "portfolio_return_pct": round(portfolio_loss * 100, 1),
@@ -370,17 +500,34 @@ def stress_test(
             "per_holding": [],
         })
 
+    # Reverse stress test: what market drop produces a given portfolio loss?
+    reverse = None
+    if portfolio_beta != 0:
+        market_drop_needed = -loss_threshold_pct / portfolio_beta
+        reverse = {
+            "loss_threshold_pct": loss_threshold_pct,
+            "market_drop_pct_needed": round(market_drop_needed, 2),
+            "portfolio_beta": round(portfolio_beta, 4),
+            "explanation": (
+                f"With a portfolio beta of {portfolio_beta:.2f}, the market would have to "
+                f"drop by {abs(market_drop_needed):.1f} percent to produce a "
+                f"{loss_threshold_pct:.0f} percent portfolio loss."
+            ),
+        }
+
     return {
         "total_value": round(total_value, 2),
         "scenarios": results,
-        "betas": {k: round(v, 2) for k, v in betas.items()},
+        "betas": {k: round(v, 4) for k, v in betas.items()},
+        "portfolio_beta": round(portfolio_beta, 4),
+        "reverse_stress_test": reverse,
+        "beta_method": "ols_252d_vs_spy",
     }
 
 
-# ── Helper Functions ──────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────
 
 def _latest_price(data: list[dict]) -> float:
-    """Get latest closing price from daily data (newest-first)."""
     if data and len(data) > 0:
         return float(data[0].get("close", 0))
     return 0.0
@@ -389,15 +536,14 @@ def _latest_price(data: list[dict]) -> float:
 def _build_portfolio_matrix(
     daily_data: dict[str, list[dict]],
     holdings: list[dict],
-) -> tuple:
-    """
-    Build weight vector and aligned returns matrix.
+):
+    """Build (weights, log_returns_matrix, symbols) aligned by length.
 
-    Returns (weights_array, returns_matrix) or (None, None).
+    Returns (None, None, []) if there is not enough data.
     """
     symbols = [h["symbol"] for h in holdings]
     all_returns = {}
-    total_value = 0
+    total_value = 0.0
     values = {}
 
     for h in holdings:
@@ -406,38 +552,36 @@ def _build_portfolio_matrix(
         if not data:
             continue
 
-        closes = [d["close"] for d in reversed(data)]  # oldest first
+        closes = [d["close"] for d in data]  # newest first
         if len(closes) < 2:
             continue
 
-        rets = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
-        all_returns[sym] = rets
-        price = data[0]["close"]  # newest
+        log_rets = log_returns_from_prices(closes)
+        all_returns[sym] = log_rets
+        price = closes[0]
         val = h["shares"] * price
         values[sym] = val
         total_value += val
 
     if not all_returns or total_value <= 0:
-        return None, None
+        return None, None, []
 
-    # Align to shortest series
     valid_symbols = [s for s in symbols if s in all_returns]
-    min_len = min(len(all_returns[s]) for s in valid_symbols)
-
+    min_len = min(all_returns[s].size for s in valid_symbols)
     if min_len < 10:
-        return None, None
+        return None, None, []
 
-    returns_matrix = np.array([all_returns[s][:min_len] for s in valid_symbols]).T
-    weights = np.array([values.get(s, 0) / total_value for s in valid_symbols])
+    returns_matrix = np.column_stack([all_returns[s][-min_len:] for s in valid_symbols])
+    weights = np.array([values.get(s, 0) / total_value for s in valid_symbols], dtype=float)
 
-    return weights, returns_matrix
+    return weights, returns_matrix, valid_symbols
 
 
 def _build_returns_dataframe(
     daily_data: dict[str, list[dict]],
     symbols: list[str],
 ) -> Optional[pd.DataFrame]:
-    """Build a DataFrame of daily returns aligned by date for all symbols."""
+    """Build a DataFrame of close prices aligned by date for all symbols."""
     price_series = {}
     for sym in symbols:
         data = daily_data.get(sym, [])
