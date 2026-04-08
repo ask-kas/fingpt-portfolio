@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fingpt",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["/Users/shihanmahfuz/Downloads/FINGPT/backend/app.py"],
+      "port": 8000
+    }
+  ]
+}

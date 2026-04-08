@@ -94,7 +94,7 @@
 
   /* ── Holdings Input ─────────────────────────── */
   .holdings-grid {
-    display: grid; grid-template-columns: 2fr 1fr 1fr auto;
+    display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto;
     gap: 8px; align-items: center; margin-bottom: 12px;
   }
   .holdings-grid label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -249,9 +249,9 @@
   <div class="panel">
     <h2><span class="section-badge"></span> Your Portfolio <span class="info-btn" onclick="showInfo('portfolio')">i</span></h2>
     <div id="holdingsContainer"></div>
-    <div style="font-size:0.72rem;color:var(--muted);margin-bottom:8px">Supports stocks (AAPL, MSFT) and crypto (BTC, ETH, SOL)</div>
+    <div style="font-size:0.72rem;color:var(--muted);margin-bottom:8px">Supports stocks like AAPL or MSFT and crypto tickers like BTC, ETH, SOL. Dividends per share is optional and used for total return and tax computations.</div>
     <div class="btn-row">
-      <button class="btn-secondary" onclick="addHolding()">+ Add Stock</button>
+      <button class="btn-secondary" onclick="addHolding()">Add Stock</button>
       <button class="btn-primary" id="analyzeBtn" onclick="analyzePortfolio()">Analyze Portfolio</button>
     </div>
   </div>
@@ -288,9 +288,10 @@
           <table id="holdingsTable">
             <thead><tr>
               <th>Symbol</th><th>Price</th><th>Value</th>
-              <th>Gain/Loss</th><th>Vol</th><th>Sharpe</th><th>Sortino</th>
+              <th>Price Ret</th><th>Total Ret</th><th>Divs</th>
+              <th>Vol</th><th>Sharpe</th><th>Sortino</th>
               <th>Beta</th><th>Alpha</th><th>Max DD</th>
-              <th>SMA 20</th><th>SMA 50</th><th>RSI 14</th>
+              <th>SMA 20</th><th>SMA 50</th><th>RSI 14</th><th>Tax</th>
             </tr></thead>
             <tbody></tbody>
           </table>
@@ -307,7 +308,7 @@
       <!-- Monte Carlo -->
       <div class="panel full-width" id="monteCarloPanel" style="display:none">
         <h2><span class="section-badge"></span> Risk Analysis — Monte Carlo VaR <span class="info-btn" onclick="showInfo('montecarlo')">i</span></h2>
-        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">10,000 simulated 30-day portfolio paths using historical return distributions</p>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">10,000 simulated 30 day portfolio paths drawn from a fitted Student t distribution with full covariance via Cholesky decomposition.</p>
         <div class="risk-grid" id="varCards"></div>
         <div class="mc-charts">
           <div>
@@ -324,7 +325,7 @@
       <!-- Efficient Frontier -->
       <div class="panel" id="frontierPanel" style="display:none">
         <h2><span class="section-badge"></span> Efficient Frontier <span class="info-btn" onclick="showInfo('frontier')">i</span></h2>
-        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Markowitz mean-variance optimization</p>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Markowitz mean variance optimisation with Ledoit Wolf shrinkage and Black Litterman priors. Box constraints between 5 and 60 percent per name.</p>
         <div id="frontierChart" class="plotly-chart"></div>
         <div id="frontierWeights" style="margin-top:12px"></div>
       </div>
@@ -339,22 +340,45 @@
       <!-- Stress Testing -->
       <div class="panel full-width" id="stressPanel" style="display:none">
         <h2><span class="section-badge"></span> Stress Testing <span class="info-btn" onclick="showInfo('stress')">i</span></h2>
-        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Beta-adjusted estimated losses under historical market crises</p>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Beta adjusted estimated losses under historical market crises, using the canonical 252 day OLS beta against SPY.</p>
         <div id="stressResults"></div>
+        <div id="reverseStressBox" style="margin-top:16px"></div>
+      </div>
+
+      <!-- Factor Attribution -->
+      <div class="panel full-width" id="factorPanel" style="display:none">
+        <h2><span class="section-badge"></span> Factor Attribution <span class="info-btn" onclick="showInfo('factor')">i</span></h2>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Single factor CAPM decomposition of portfolio return into market beta component and alpha (idiosyncratic skill).</p>
+        <div id="factorAttribution"></div>
+      </div>
+
+      <!-- Tariff Exposure -->
+      <div class="panel" id="tariffPanel" style="display:none">
+        <h2><span class="section-badge"></span> Tariff Exposure <span class="info-btn" onclick="showInfo('tariff')">i</span></h2>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Estimated portfolio drag from a tariff shock on AAPL China cost of goods sold, under a constant P over E translation.</p>
+        <div id="tariffBox"></div>
+      </div>
+
+      <!-- Tax Liability -->
+      <div class="panel" id="taxPanel" style="display:none">
+        <h2><span class="section-badge"></span> Tax Liability <span class="info-btn" onclick="showInfo('tax')">i</span></h2>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Estimated long term capital gains tax on each position, plus harvestable losses, at the top marginal rate of 23.8 percent (20 percent federal plus 3.8 percent NIIT).</p>
+        <div id="taxBox"></div>
       </div>
 
       <!-- Options -->
       <div class="panel full-width" id="optionsPanel" style="display:none">
         <div class="header-row">
-          <h2><span class="section-badge"></span> Options Chain <span class="info-btn" onclick="showInfo('options')">i</span></h2>
+          <h2><span class="section-badge"></span> Options Chain with Greeks <span class="info-btn" onclick="showInfo('options')">i</span></h2>
           <div style="display:flex;gap:8px;align-items:center">
             <select id="optionsSymbol" onchange="onOptionsSymbolChange()"></select>
             <select id="optionsExpiry" onchange="fetchOptions()"></select>
           </div>
         </div>
+        <div id="optionsSummary" style="margin-bottom:12px"></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-          <div><h3 style="color:var(--green)">Calls</h3><div style="overflow-x:auto;max-height:300px;overflow-y:auto"><table id="callsTable"><thead><tr><th>Strike</th><th>Last</th><th>Bid</th><th>Ask</th><th>IV</th><th>Vol</th><th>OI</th></tr></thead><tbody></tbody></table></div></div>
-          <div><h3 style="color:var(--red)">Puts</h3><div style="overflow-x:auto;max-height:300px;overflow-y:auto"><table id="putsTable"><thead><tr><th>Strike</th><th>Last</th><th>Bid</th><th>Ask</th><th>IV</th><th>Vol</th><th>OI</th></tr></thead><tbody></tbody></table></div></div>
+          <div><h3 style="color:var(--green)">Calls</h3><div style="overflow-x:auto;max-height:340px;overflow-y:auto"><table id="callsTable"><thead><tr><th>Strike</th><th>Last</th><th>Bid</th><th>Ask</th><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>Vol</th><th>OI</th></tr></thead><tbody></tbody></table></div></div>
+          <div><h3 style="color:var(--red)">Puts</h3><div style="overflow-x:auto;max-height:340px;overflow-y:auto"><table id="putsTable"><thead><tr><th>Strike</th><th>Last</th><th>Bid</th><th>Ask</th><th>IV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>Vol</th><th>OI</th></tr></thead><tbody></tbody></table></div></div>
         </div>
       </div>
 
@@ -387,97 +411,122 @@
 
 <script>
 // ── Info Content Database ─────────────────────────────────
+// Every entry documents the exact inputs, the step by step computation,
+// the units, and the interpretation so that a user can understand where
+// every number on the dashboard comes from. No hyphens or quotes in the
+// copy: punctuation is kept simple so screen readers and exports read well.
 const INFO = {
   portfolio: {
     title: 'Your Portfolio',
-    what: 'Enter the stocks or crypto you own. For each holding, specify the ticker symbol, number of shares, and the average price you paid.',
-    method: 'Symbols are resolved via Yahoo Finance (yfinance). Crypto shorthand like BTC is auto-mapped to BTC-USD.',
-    why: 'This is the starting point for all analysis. Accurate input data ensures meaningful portfolio metrics.',
-    tags: ['yfinance', 'Portfolio Input', 'Stocks', 'Crypto'],
+    what: 'Enter the tickers you own together with shares, average cost, and optionally the cumulative dividends per share received since you bought the position. Dividends feed into the total return and tax liability panels.',
+    method: '<b>Inputs</b><br>Symbol (resolved to a Yahoo Finance ticker, so BTC becomes BTC USD), shares (units held), avg cost (dollar price per share when purchased), dividends per share (optional, in dollars).<br><br><b>Normalisation</b><br>Crypto shorthand is mapped via a fixed dictionary. Symbols are upper cased and trimmed.',
+    why: 'The entire analytics pipeline uses these inputs. Cost basis feeds gain loss, dividends feed total return and after tax return, shares times spot price gives the weight vector used in covariance and optimisation math.',
+    tags: ['yfinance', 'Portfolio Input', 'Cost Basis', 'Dividends'],
   },
   summary: {
     title: 'Portfolio Summary',
-    what: 'A snapshot of your portfolio\'s key performance and risk metrics, including total value, gain/loss, volatility, Sharpe ratio, Sortino ratio, Beta, Alpha, and diversification score.',
-    method: '<b>Volatility</b>: Annualized standard deviation of daily returns (&sigma; &times; &radic;252).<br><b>Sharpe Ratio</b>: (Mean excess return / Std dev) &times; &radic;252 — measures risk-adjusted return.<br><b>Sortino</b>: Like Sharpe but only penalizes downside volatility — better for asymmetric returns.<br><b>Beta</b>: Covariance(portfolio, SPY) / Variance(SPY) — sensitivity to market moves.<br><b>Alpha</b>: Jensen\'s Alpha — excess return beyond what beta predicts. Positive = outperforming.',
-    why: 'These are the same metrics used by institutional investors and hedge funds. Sharpe tells you if your returns justify the risk. Beta tells you how much market exposure you have. Alpha tells you if you\'re actually generating skill-based returns.',
-    tags: ['Sharpe Ratio', 'Sortino', 'Beta', 'Alpha', 'Modern Portfolio Theory'],
+    what: 'Top line performance and risk metrics computed across your entire portfolio: total value, total return (dividend adjusted), annualised volatility, risk adjusted ratios, market exposure, and concentration metrics.',
+    method: '<b>Returns</b><br>All statistics run on daily log returns r_t equal to ln(P_t over P_{t minus 1}). Annualised geometric return R equals exp(mean_log_return times 252) minus 1.<br><br><b>Volatility</b><br>Full covariance formulation: sigma_p equals sqrt(w^T times Sigma times w), where Sigma is the 252 day annualised covariance matrix of log returns (not the diagonal only approximation that ignores correlation).<br><br><b>Sharpe</b><br>(R_p minus R_f) over sigma_p, with R_f taken from the live 10 year treasury.<br><br><b>Sortino</b><br>(R_p minus R_f) over the downside deviation, where only returns below the MAR (minimum acceptable return equal to R_f per day) are squared.<br><br><b>Treynor</b><br>(R_p minus R_f) over portfolio beta. Rewards skill relative to systematic risk only.<br><br><b>Information Ratio</b><br>Annualised mean active return (portfolio minus benchmark) over the tracking error.<br><br><b>Beta</b><br>Weighted sum of holding betas. Each holding beta is the OLS slope of its log returns regressed on SPY log returns over the trailing 252 days. This is the single canonical source of beta used everywhere in the system.<br><br><b>Jensen Alpha</b><br>R_p minus (R_f plus beta times (R_m minus R_f)).<br><br><b>HHI</b><br>Herfindahl Hirschman Index: sum of squared weights. 1 over n means perfectly diversified, 1 means fully concentrated.<br><br><b>Effective N</b><br>1 over HHI. Interpret as the effective number of independent positions.<br><br><b>Diversification Ratio</b><br>sum(w_i times sigma_i) over sigma_portfolio. Greater than 1 means correlations are helping you.',
+    why: 'These are the metrics used by institutional risk books. Sharpe by itself can mislead when returns are asymmetric, so we show Sortino alongside. HHI and Effective N catch concentration that a simple weight table hides. Treynor and Information Ratio separate skill from luck.',
+    tags: ['Sharpe', 'Sortino', 'Treynor', 'Information Ratio', 'HHI', 'Diversification Ratio', 'Jensen Alpha', '252d OLS Beta'],
   },
   ai: {
     title: 'AI Insight (FinGPT)',
-    what: 'Natural language portfolio commentary generated by a fine-tuned Large Language Model. It reads your portfolio metrics, macro data, and recent news to produce a risk assessment.',
-    method: '<b>Model</b>: Meta Llama2-7B-chat fine-tuned with FinGPT LoRA adapter.<br><b>Quantization</b>: 4-bit NF4 to fit on a free Google Colab T4 GPU (~3.5GB VRAM).<br><b>Tasks</b>: Sentiment analysis (per headline), headline classification, and portfolio insight generation.',
-    why: 'Combines quantitative metrics with qualitative AI reasoning. This bridges the gap between raw numbers and actionable investment commentary — something traditional tools can\'t do.',
-    tags: ['Llama2', 'LoRA', 'FinGPT', 'NLP', 'Sentiment Analysis', 'Google Colab'],
+    what: 'A natural language commentary on the portfolio generated by a fine tuned large language model. It reads the numeric metrics, macro context, and recent headlines and produces a concise risk assessment.',
+    method: '<b>Model</b><br>Meta Llama 2 7B chat, fine tuned with the FinGPT LoRA adapter.<br><br><b>Quantisation</b><br>4 bit NF4 so that the weights fit on a free Google Colab T4 GPU (about 3.5 GB VRAM).<br><br><b>Pipeline</b><br>The backend serialises portfolio metrics, macro snapshot, and five headlines into a structured prompt and forwards it to the Colab server over an ngrok tunnel. Sentiment classification runs per headline; insight generation runs once per analyse call.',
+    why: 'Quantitative metrics are necessary but not sufficient. The language model reads everything at once and surfaces patterns a ratio table cannot: concentration plus headline risk, macro regime plus factor exposure, and so on.',
+    tags: ['Llama2', 'LoRA', 'FinGPT', 'NLP', '4 bit NF4', 'Google Colab', 'ngrok'],
   },
   holdings: {
     title: 'Holdings Detail',
-    what: 'Detailed per-stock breakdown showing price, value, gain/loss, volatility, Sharpe, Sortino, Beta, Alpha, max drawdown, moving averages, and RSI.',
-    method: '<b>Max Drawdown</b>: Largest peak-to-trough decline — measures worst-case historical loss.<br><b>SMA 20/50</b>: Simple Moving Average — price smoothing over 20 and 50 days. Crossovers signal trends.<br><b>RSI 14</b>: Relative Strength Index — momentum oscillator (0-100). Below 30 = oversold, above 70 = overbought.<br><b>Treynor Ratio</b>: Excess return per unit of systematic (beta) risk.',
-    why: 'Per-holding metrics reveal which positions drive your portfolio\'s risk and return. Max drawdown shows the worst historical pain. RSI signals potential entry/exit points.',
-    tags: ['Technical Analysis', 'RSI', 'SMA', 'Max Drawdown', 'Treynor'],
+    what: 'Per position breakdown with price, value, price only and total (dividend inclusive) returns, risk statistics, CAPM measures, technicals, and estimated long term capital gains tax.',
+    method: '<b>Price Return</b><br>(current price minus avg cost) over avg cost.<br><br><b>Total Return</b><br>price return plus dividends received divided by cost basis.<br><br><b>Volatility</b><br>Annualised standard deviation of daily log returns, Bessel corrected (ddof equal to 1).<br><br><b>Sharpe and Sortino</b><br>Same formulas as the portfolio level, but on the holding return series.<br><br><b>Beta</b><br>OLS regression of holding log returns on SPY log returns over the trailing 252 days. None if less than 30 days of history.<br><br><b>Jensen Alpha</b><br>R_i minus (R_f plus beta_i times (R_m minus R_f)).<br><br><b>Max Drawdown</b><br>max over t of (running peak minus price_t) over running peak, scanned across the entire price history (not a windowed view).<br><br><b>SMA 20 and 50</b><br>Simple moving averages of the most recent 20 and 50 closes.<br><br><b>RSI 14</b><br>Wilder smoothed Relative Strength Index. Seeded with the simple mean of the first 14 deltas, then smoothed with avg_t equal to (avg_{t minus 1} times 13 plus value_t) over 14. Labels are extreme oversold at 20 or below, oversold below 30, overbought above 70, extreme overbought at 80 or above.<br><br><b>Tax</b><br>Long term capital gains at 23.8 percent (20 percent federal plus 3.8 percent NIIT). Losses become harvestable and show the tax benefit.',
+    why: 'Portfolio level numbers hide which single position is dragging on the rest. This table lets you sort by any column, spot oversold entries with the RSI label, and see exactly which position owes the most tax if liquidated.',
+    tags: ['Log Returns', 'Bessel Corrected', 'OLS Beta', 'Wilder RSI', 'LTCG', 'Dividend Adjusted Return'],
   },
   candle: {
     title: 'Price Charts',
-    what: 'Interactive candlestick charts showing Open-High-Low-Close (OHLC) price data for each holding, with SMA-20 and SMA-50 overlays and volume bars.',
-    method: '<b>Candlesticks</b>: Green = close > open (bullish day), Red = close < open (bearish). Wicks show intraday range.<br><b>Moving Averages</b>: SMA-20 (short-term trend) and SMA-50 (medium-term). When SMA-20 crosses above SMA-50, it\'s a "golden cross" — bullish signal.',
-    why: 'Candlestick charts are the standard visualization on Bloomberg terminals and professional trading platforms. They reveal price patterns, trends, and momentum that tables alone cannot show.',
-    tags: ['OHLC', 'Candlestick', 'Moving Averages', 'Golden Cross', 'Volume', 'Plotly.js'],
+    what: 'Interactive candlestick chart for each holding with SMA 20 and SMA 50 overlays. Hover to see OHLC values and the moving averages at a given date.',
+    method: '<b>Candlestick</b><br>Each bar encodes open, high, low, close for one trading day. Green means close greater than open, red means close below open, wicks show the intraday range.<br><br><b>SMA 20 and SMA 50</b><br>Rolling simple averages of the close price over the trailing 20 and 50 bars. A bullish golden cross occurs when the 20 crosses above the 50.',
+    why: 'Tables of numbers compress out a lot of information. A candlestick immediately shows whether a move is trending or mean reverting, whether volume is confirming, and how far price has travelled relative to its moving average anchors.',
+    tags: ['OHLC', 'Candlestick', 'SMA 20', 'SMA 50', 'Plotly'],
   },
   montecarlo: {
-    title: 'Monte Carlo Value at Risk (VaR)',
-    what: 'Simulates 10,000 possible 30-day futures for your portfolio using random sampling from historical return distributions. Calculates VaR and CVaR (Expected Shortfall).',
-    method: '<b>Monte Carlo</b>: Draws random daily returns from a multivariate normal distribution fitted to your holdings\' historical returns and correlations.<br><b>VaR (95%)</b>: "In 95% of scenarios, losses won\'t exceed this." The 5th percentile of simulated returns.<br><b>CVaR / Expected Shortfall</b>: Average loss in the worst 5% of scenarios — captures tail risk better than VaR.',
-    why: 'VaR is the industry-standard risk metric used by every major bank and hedge fund (required by Basel III regulations). CVaR goes further by asking "when things go wrong, how bad does it get?" — crucial for understanding tail risk.',
-    tags: ['Monte Carlo', 'VaR', 'CVaR', 'Expected Shortfall', 'Basel III', 'Risk Management', 'scipy'],
+    title: 'Monte Carlo VaR',
+    what: 'Runs 10,000 simulated 30 day portfolio paths to estimate Value at Risk and Conditional VaR. Returns a histogram of ending returns and a fan chart of the percentile paths.',
+    method: '<b>Step 1 build return matrix</b><br>Align the daily log returns for every holding to a common length.<br><br><b>Step 2 estimate moments</b><br>Compute the mean vector mu and the full daily covariance matrix Sigma (Bessel corrected). Fit a Student t degrees of freedom to each marginal return series by maximum likelihood and take the conservative minimum nu.<br><br><b>Step 3 Cholesky</b><br>L equal to cholesky(Sigma plus 1e minus 10 times I) produces the lower triangular factor so that correlated draws can be generated as epsilon equal to L times z.<br><br><b>Step 4 draws</b><br>For each of 10,000 simulations and each of 30 days, sample an iid Student t vector z with nu degrees of freedom, rescale by sqrt((nu minus 2) over nu) so the resulting covariance matches Sigma, and apply L.<br><br><b>Step 5 portfolio returns</b><br>Portfolio daily log return equals the dot product of the weight vector with the simulated daily returns. Cumulative return is the sum of the 30 daily logs, then converted to a simple return via exp minus 1.<br><br><b>VaR 95</b><br>The 5th percentile of the ending return distribution.<br><br><b>CVaR 95</b><br>The mean of returns below the 5th percentile. CVaR is always at least as bad as VaR.',
+    why: 'VaR is the Basel III regulatory standard. But VaR alone misses how bad the worst case gets, which is why every serious desk reports CVaR alongside it. The Student t marginal distribution captures fat tails that a Gaussian assumption misses, and the Cholesky step preserves correlation structure so that diversification benefits are modelled correctly.',
+    tags: ['Monte Carlo', 'VaR', 'CVaR', 'Cholesky', 'Student t', 'Basel III', 'Tail Risk', '10000 simulations'],
   },
   frontier: {
-    title: 'Efficient Frontier (Markowitz)',
-    what: 'Shows the set of optimal portfolios that offer the highest expected return for each level of risk. Plots your current allocation against the mathematically optimal portfolios.',
-    method: '<b>Mean-Variance Optimization</b>: Uses PyPortfolioOpt to solve the Markowitz (1952) optimization problem.<br><b>Max Sharpe Portfolio</b>: The tangency portfolio — highest risk-adjusted return on the frontier.<br><b>Min Volatility Portfolio</b>: Lowest possible risk regardless of return.<br>The frontier curve is generated by sweeping target returns and solving for minimum variance at each.',
-    why: 'Harry Markowitz won the Nobel Prize (1990) for this. It\'s the foundation of Modern Portfolio Theory. Seeing where your portfolio sits vs. the frontier instantly shows if you\'re taking unnecessary risk — and exactly how to rebalance.',
-    tags: ['Markowitz', 'MPT', 'Nobel Prize', 'PyPortfolioOpt', 'cvxpy', 'Optimization'],
+    title: 'Efficient Frontier',
+    what: 'Plots the set of portfolios that maximise expected return at each level of risk. Shows your current position, the max Sharpe portfolio, and the minimum volatility portfolio.',
+    method: '<b>Covariance</b><br>Ledoit Wolf shrunk covariance. Pulls the sample covariance toward a structured target (constant correlation), which fixes the instability problem that pure sample covariance has with small samples.<br><br><b>Expected returns</b><br>Black Litterman style blend of two sources: (1) implied equilibrium returns Pi equal to lambda times Sigma times w_market with risk aversion lambda of 2.5, and (2) historical mean returns. The 50 50 blend tempers corner solutions that pure historical mean chasing tends to produce.<br><br><b>Box constraints</b><br>Every weight is constrained between 5 percent and 60 percent. This stops the optimiser from putting everything in the single best performer and produces portfolios that are actually investable.<br><br><b>Frontier sweep</b><br>Use the max Sharpe portfolio and the minimum volatility portfolio as anchors, then solve efficient_return(target) at 50 equally spaced target returns in between.',
+    why: 'Mean variance optimisation as taught by Markowitz 1952 is famously unstable with raw inputs. Ledoit Wolf, Black Litterman priors, and box constraints are the three standard fixes used by every institutional quant desk. Without them, the optimiser picks corner solutions that would never clear a risk committee.',
+    tags: ['Markowitz', 'Black Litterman', 'Ledoit Wolf Shrinkage', 'Box Constraints', 'PyPortfolioOpt'],
   },
   correlation: {
     title: 'Correlation Matrix',
-    what: 'Shows how similarly each pair of holdings moves day-to-day. Values range from -1 (move opposite) to +1 (move together).',
-    method: 'Pearson correlation coefficient between daily return series of each pair. Displayed as an interactive heatmap. The average off-diagonal correlation summarizes overall portfolio diversification quality.',
-    why: 'The HHI diversification score only looks at position sizing. Correlation reveals the truth: a portfolio of 10 tech stocks may look "diversified" by weight, but if they\'re all correlated at 0.8, a single shock hits everything. Low correlation = real diversification.',
-    tags: ['Pearson Correlation', 'Diversification', 'Heatmap', 'Risk Management'],
+    what: 'Shows the pairwise Pearson correlation of daily log returns across your holdings, plus a rolling 60 day correlation history so you can see whether pairs decouple or tighten over time.',
+    method: '<b>Pairwise</b><br>Pearson correlation of daily log returns. Output is a symmetric matrix with ones on the diagonal.<br><br><b>Average off diagonal</b><br>Mean of the non diagonal entries summarises whether the portfolio behaves like one bet or many.<br><br><b>Rolling 60 day</b><br>For each pair, compute the rolling 60 trading day Pearson correlation and return the full time series. This is the standard window institutional desks use to watch correlation regime change.',
+    why: 'Position sizing (HHI) does not capture correlation risk. Ten tech names at 10 percent each look diversified on a weight table, but if they all correlate at 0.85 then one factor shock wipes out the entire book. Rolling correlation catches when correlations spike in a crisis.',
+    tags: ['Pearson Correlation', 'Rolling 60d', 'Heatmap', 'Log Returns'],
   },
   stress: {
     title: 'Stress Testing',
-    what: 'Estimates how your portfolio would perform under historical market crises — 2008 GFC, COVID crash, 2022 rate hikes, dot-com bust, and the 2010 flash crash.',
-    method: '<b>Beta-adjusted losses</b>: Each holding\'s estimated loss = its beta &times; the historical market decline. This accounts for stocks that are more or less sensitive to market moves.<br>Per-holding betas are calculated against the portfolio to show which positions contribute most to crisis risk.',
-    why: 'Past performance doesn\'t predict the future, but stress testing shows your portfolio\'s structural vulnerabilities. If your portfolio would lose 50% in a 2008-style event, you may want to add defensive positions.',
-    tags: ['Stress Testing', 'Beta', 'Scenario Analysis', 'Risk Management', 'Tail Risk'],
+    what: 'Projects portfolio losses under five historical crisis scenarios using a beta adjusted shock model, and computes a reverse stress test (what market drop would be required to trigger a given portfolio loss threshold).',
+    method: '<b>Forward stress</b><br>For each scenario the historical SPY return is applied as market_return. Per holding loss equals beta_i times market_return, where beta_i is the canonical 252 day OLS beta versus SPY. Portfolio loss equals the weighted sum, equivalently portfolio_beta times market_return.<br><br><b>Reverse stress</b><br>Given a portfolio loss threshold (default 20 percent), solve for market_drop_needed equal to loss_threshold divided by portfolio_beta. Answers the question, how far would SPY have to fall for me to lose 20 percent.<br><br><b>Scenarios</b><br>2008 GFC at minus 38.9 percent, COVID 19 at minus 33.7 percent, 2022 rate hikes at minus 25.2 percent, dot com at minus 49.1 percent, 2010 flash crash at minus 6.9 percent.',
+    why: 'A beta of 1.2 means crisis losses are 20 percent worse than the index. Stress testing tells you exactly how much worse, before it happens. The reverse stress test is what risk committees ask during quarterly reviews to gut check whether the portfolio is robust.',
+    tags: ['Stress Test', 'OLS Beta', 'Reverse Stress Test', 'Scenario Analysis', 'SPY Proxy'],
+  },
+  factor: {
+    title: 'Factor Attribution',
+    what: 'Decomposes portfolio return into two CAPM components: the portion explained by market exposure (beta times market excess return) and the residual (alpha), which represents idiosyncratic skill or luck.',
+    method: '<b>Decomposition</b><br>R_p minus R_f equals beta times (R_m minus R_f) plus alpha.<br><br><b>Beta contribution</b><br>beta times (R_m minus R_f), where beta is the weighted sum of the holding betas and R_m is SPY annualised return.<br><br><b>Alpha contribution</b><br>The portfolio excess return minus the beta contribution. Positive alpha is skill (or lucky idiosyncratic bets), negative alpha is drag.',
+    why: 'If you want to know whether your portfolio beat the market because of skill or because you just took more risk, factor attribution is the answer. A 20 percent return with a beta of 1.5 during a 15 percent market rally is zero alpha. A 15 percent return with a beta of 0.8 during a 10 percent rally is significant alpha. This panel shows which one you are.',
+    tags: ['CAPM', 'Alpha Beta Decomposition', 'Single Factor Model', 'Performance Attribution'],
+  },
+  tariff: {
+    title: 'Tariff Exposure',
+    what: 'Estimates the portfolio price drag from a tariff shock on the AAPL position, using AAPL China cost of goods sold and a pass through assumption.',
+    method: '<b>Inputs</b><br>tariff_rate (default 25 percent), pass_through (default 50 percent, the share of the tariff cost AAPL can push onto consumers via price rises), AAPL China COGS of 87 billion dollars, AAPL net income of 94 billion dollars.<br><br><b>Step 1 dollar hit</b><br>impact_dollar equals tariff_rate times 87 times (1 minus pass_through). With the defaults that is 25 percent times 87 times 0.5 equals 10.875 billion dollars.<br><br><b>Step 2 earnings drop percent</b><br>impact_dollar over net_income. With the defaults that is 10.875 over 94, about 11.57 percent.<br><br><b>Step 3 price impact</b><br>Under a constant P E assumption, P equals PE times EPS, so a one percent drop in earnings equals a one percent drop in price. The PE cancels in the ratio. Price impact equals earnings drop percent (negative).<br><br><b>Step 4 portfolio drag</b><br>AAPL weight in the portfolio times the price impact.',
+    why: 'AAPL has substantial China manufacturing exposure. A tariff shock is a real and quantifiable tail risk, and this model tells you exactly how much of that risk is in your book right now. The constant P E translation is the standard way desks translate earnings hits to price impacts for a single shock, because multiple compression is a separate and much messier variable.',
+    tags: ['Tariff Stress', 'AAPL', 'China COGS', 'Constant P E', 'Scenario Analysis'],
+  },
+  tax: {
+    title: 'Tax Liability',
+    what: 'Estimates the long term capital gains tax owed on each position if liquidated, and identifies positions with a harvestable loss that could offset gains elsewhere.',
+    method: '<b>Rate</b><br>23.8 percent. This is 20 percent federal long term capital gains plus the 3.8 percent net investment income tax (NIIT) that applies to high earners above the Medicare surtax threshold.<br><br><b>Gains</b><br>Tax owed equals gain times 23.8 percent. After tax gain equals gain minus tax owed.<br><br><b>Losses</b><br>No tax owed. Loss benefit equals the absolute loss times 23.8 percent, representing the tax offset you could realise against other gains.<br><br><b>Assumption</b><br>All positions are assumed held more than one year. Short term gains (taxed as ordinary income) are not computed here because the backend has no purchase date.',
+    why: 'Pretax returns lie. A 40 percent gain is a 30.5 percent gain after tax. This panel surfaces the real number you keep, and flags positions where tax loss harvesting would generate a benefit you are currently leaving on the table.',
+    tags: ['LTCG', 'NIIT 3.8 percent', 'Tax Loss Harvesting', '23.8 percent'],
   },
   options: {
-    title: 'Options Chain',
-    what: 'Displays available call and put option contracts for your stock holdings, including strike prices, bid/ask, implied volatility, volume, and open interest.',
-    method: 'Data fetched from Yahoo Finance. <b>Implied Volatility (IV)</b>: The market\'s forecast of future price movement — derived from option prices using Black-Scholes. <b>Open Interest</b>: Number of outstanding contracts — indicates liquidity.',
-    why: 'Options data reveals what the market expects. High IV means the market anticipates big moves. Options can be used for hedging (protective puts) or income generation (covered calls).',
-    tags: ['Options', 'Implied Volatility', 'Black-Scholes', 'Calls', 'Puts', 'Hedging'],
+    title: 'Options Chain with Greeks',
+    what: 'Option chain for each stock holding with market prices, implied volatility, and the full set of Black Scholes Greeks computed from the market IV. Also shows the put call ratio and the implied volatility skew.',
+    method: '<b>Black Scholes pricing</b><br>C equals S times N(d1) minus K times exp(minus r T) times N(d2) for calls. Put via put call parity.<br><br><b>Greeks</b><br>Delta is dC over dS, gamma is d2C over dS2, theta is dC over dT per calendar day (divided by 365), vega is dC over dsigma per one volatility point (divided by 100), rho is dC over dr per one rate point (divided by 100).<br><br><b>Risk free rate</b><br>Live 10 year treasury from FRED.<br><br><b>Put Call Ratio</b><br>Total put open interest over total call open interest. Above 1 means puts are more actively held, often interpreted as bearish positioning.<br><br><b>IV Skew</b><br>Implied volatility of an approximately 10 percent out of the money put minus the IV of an approximately 10 percent out of the money call. Positive skew (the usual state for equities) means downside protection costs more than upside speculation.',
+    why: 'Greeks tell you exactly how your option position will move if any of the five Black Scholes inputs changes. Delta is the hedge ratio, gamma is the delta sensitivity (important for risk on fast moves), theta is the daily time decay you pay for optionality, vega is your volatility exposure, rho is your rate exposure. Put call ratio and skew together give a quick read on how the options market is priced relative to calm.',
+    tags: ['Black Scholes', 'Delta', 'Gamma', 'Theta', 'Vega', 'Rho', 'Put Call Ratio', 'IV Skew'],
   },
   allocation: {
     title: 'Allocation',
-    what: 'A doughnut chart showing how your portfolio value is distributed across holdings by percentage.',
-    method: 'Each slice = (position value / total portfolio value) &times; 100%. Position value = current price &times; shares held.',
-    why: 'Concentration risk is one of the biggest portfolio killers. If one position is 80% of your portfolio, a single bad earnings report can devastate you. Visualizing allocation makes imbalances immediately obvious.',
-    tags: ['Asset Allocation', 'Concentration Risk', 'Chart.js'],
+    what: 'Doughnut chart of how portfolio value is distributed across holdings in percentage terms.',
+    method: 'Each slice equals (position value) over (total portfolio value) times 100 percent. Position value equals current price times shares held.',
+    why: 'Visual allocation makes concentration obvious in a way that a number cannot. If one slice is taking more than half the ring, that is the single biggest source of risk in the book.',
+    tags: ['Position Sizing', 'Concentration', 'Chart.js'],
   },
   macro: {
     title: 'Macro Environment',
-    what: 'Key macroeconomic indicators from the Federal Reserve (FRED): Fed Funds Rate, CPI (inflation), unemployment, 10Y Treasury yield, and S&P 500 level.',
-    method: 'Data fetched from the FRED API (Federal Reserve Economic Data). Each indicator shows the most recent observation and its date.',
-    why: 'Macro conditions drive markets. Rising rates hurt growth stocks. High inflation erodes purchasing power. The 10Y yield is the "risk-free rate" used in Sharpe calculations. Understanding macro context makes portfolio decisions more informed.',
-    tags: ['FRED', 'Federal Reserve', 'Interest Rates', 'CPI', 'Macro Economics'],
+    what: 'Live macro snapshot from the Federal Reserve Economic Data (FRED) API: fed funds rate, CPI year over year inflation, unemployment rate, 10 year treasury yield, and S and P 500 level.',
+    method: '<b>Fed Funds Rate</b><br>Latest monthly FEDFUNDS observation in percent.<br><br><b>CPI Year over Year</b><br>Computed as ((CPI_current over CPI_12_months_ago) minus 1) times 100. The raw CPIAUCSL series is an index level (currently around 327), so the backend pulls 13 months of history and computes the percentage change directly. This fixes the common mistake of displaying the raw index as inflation.<br><br><b>Unemployment</b><br>Latest UNRATE observation in percent.<br><br><b>10Y Treasury</b><br>Latest DGS10 observation in percent. This is the risk free rate used in Sharpe, Sortino, Treynor, and Black Scholes throughout the app.<br><br><b>S and P 500</b><br>Latest SP500 level. Used as a reference only, the analytical beta is calculated against SPY returns.',
+    why: 'Portfolio returns live inside a macro regime. Rising rates hurt long duration growth stocks. Rising inflation erodes nominal returns. The treasury yield is the risk free rate that enters every risk adjusted return ratio, so getting it live matters.',
+    tags: ['FRED', 'CPI YoY', 'Fed Funds', '10Y Treasury', 'Unemployment'],
   },
   news: {
-    title: 'News & Sentiment',
-    what: 'Recent financial news headlines for your holdings, optionally tagged with AI-powered sentiment analysis (positive/neutral/negative) by FinGPT.',
-    method: 'News fetched via Yahoo Finance. When the FinGPT model is online, each headline is classified using the fine-tuned Llama2 model with the prompt: "What is the sentiment of this news?"',
-    why: 'News drives short-term price action. AI sentiment analysis at scale lets you quickly assess whether recent coverage is bullish or bearish across all your holdings — something that would take hours to do manually.',
-    tags: ['News', 'Sentiment Analysis', 'FinGPT', 'NLP', 'Yahoo Finance'],
+    title: 'News and Sentiment',
+    what: 'Recent financial headlines for each holding, deduplicated by URL fingerprint, and optionally tagged with per headline FinGPT sentiment.',
+    method: '<b>Fetch</b><br>Yahoo Finance news feed per ticker.<br><br><b>Deduplication</b><br>Every URL is normalised (lowercase host, stripped query parameters, stripped fragment, stripped trailing slash) and hashed with sha1. The first 16 hex characters form the fingerprint. Articles with duplicate fingerprints or duplicate normalised titles are skipped, so syndicated wire stories only appear once.<br><br><b>Sentiment</b><br>When the FinGPT model is online, each headline is sent to the Llama2 plus LoRA classifier and labelled positive, neutral, or negative.',
+    why: 'Headline deduplication matters more than it sounds. Without it, Reuters syndicated stories show up three or four times each and crowd out other news. The URL hash approach is robust to tracking parameters like utm_source that would otherwise break naive text matching.',
+    tags: ['URL Fingerprint', 'SHA1 Dedup', 'FinGPT Sentiment', 'Yahoo Finance'],
   },
 };
 
@@ -545,15 +594,16 @@ async function checkHealth() {
 // ── Holdings UI ────────────────────────────────────────────
 function renderHoldings() {
   const c = document.getElementById('holdingsContainer');
-  c.innerHTML = `<div class="holdings-grid"><label>Symbol</label><label>Shares</label><label>Avg Cost</label><label></label></div>`
+  c.innerHTML = `<div class="holdings-grid"><label>Symbol</label><label>Shares</label><label>Avg Cost</label><label>Div / Share</label><label></label></div>`
     + holdings.map((h, i) => `<div class="holdings-grid">
       <input value="${h.symbol}" onchange="holdings[${i}].symbol=this.value" placeholder="AAPL or BTC">
       <input type="number" value="${h.shares}" onchange="holdings[${i}].shares=+this.value" placeholder="10">
       <input type="number" value="${h.avg_cost}" onchange="holdings[${i}].avg_cost=+this.value" placeholder="150">
+      <input type="number" value="${h.dividends_per_share || 0}" onchange="holdings[${i}].dividends_per_share=+this.value" placeholder="0.00">
       <button class="btn-danger" onclick="removeHolding(${i})">x</button>
     </div>`).join('');
 }
-function addHolding() { holdings.push({ symbol: '', shares: 0, avg_cost: 0 }); renderHoldings(); }
+function addHolding() { holdings.push({ symbol: '', shares: 0, avg_cost: 0, dividends_per_share: 0 }); renderHoldings(); }
 function removeHolding(i) { holdings.splice(i, 1); renderHoldings(); }
 
 // ── Analyze ────────────────────────────────────────────
@@ -570,7 +620,7 @@ async function analyzePortfolio() {
   btn.textContent = steps[0];
 
   document.getElementById('summaryGrid').innerHTML = '<div class="loader">Fetching market data &amp; running simulations</div>';
-  document.getElementById('holdingsTable').querySelector('tbody').innerHTML = '<tr><td colspan="13" class="loader">Loading</td></tr>';
+  document.getElementById('holdingsTable').querySelector('tbody').innerHTML = '<tr><td colspan="16" class="loader">Loading</td></tr>';
 
   try {
     const r = await fetch('/api/portfolio/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ holdings: valid }) });
@@ -588,46 +638,139 @@ function renderResults(data) {
   const { analytics, monte_carlo, efficient_frontier, correlation, stress_test, news, macro, ai_insight, model_available, warnings } = data;
   const s = analytics.summary;
 
-  // Warnings
+  // Warnings — merged with stale price detection from price_freshness
+  const pf = data.price_freshness || {};
+  const stale = Object.entries(pf).filter(([_k, v]) => v && v.is_stale).map(([k, v]) => `${k} last traded ${v.latest_date} (${v.age_days} days old)`);
+  const allWarnings = [...(warnings || []), ...(stale.length ? ['Stale price data: ' + stale.join('; ')] : [])];
   const wb = document.getElementById('warningsBanner');
-  if (warnings && warnings.length) { wb.style.display = 'block'; wb.innerHTML = `<strong style="color:var(--yellow)">Warnings</strong><ul>${warnings.map(w => `<li>${w}</li>`).join('')}</ul>`; }
+  if (allWarnings.length) { wb.style.display = 'block'; wb.innerHTML = `<strong style="color:var(--yellow)">Warnings</strong><ul>${allWarnings.map(w => `<li>${w}</li>`).join('')}</ul>`; }
   else { wb.style.display = 'none'; }
 
-  // Summary
-  const gl = s.total_gain_loss_pct, gc = gl >= 0 ? 'positive' : 'negative';
-  const betaStr = s.portfolio_beta != null ? s.portfolio_beta.toFixed(2) : 'N/A';
-  const alphaStr = s.portfolio_alpha != null ? (s.portfolio_alpha * 100).toFixed(2) + '%' : 'N/A';
+  // Summary — full v5 metric set
+  const signCls = v => v == null ? '' : v > 0 ? 'positive' : v < 0 ? 'negative' : '';
+  const fmtN = (v, dp = 2) => v == null ? 'N/A' : Number(v).toFixed(dp);
+  const fmtP = (v, dp = 2) => v == null ? 'N/A' : (v * 100).toFixed(dp) + '%';
+  const rfPct = s.rf_annual_pct != null ? s.rf_annual_pct.toFixed(2) + '%' : 'N/A';
+  const lookbackLabel = s.lookback_days ? `${s.lookback_days}d lookback` : 'lookback unknown';
   document.getElementById('summaryGrid').innerHTML = `
-    <div class="metric-card"><div class="label">Total Value</div><div class="value">$${fmt(s.total_value)}</div></div>
-    <div class="metric-card"><div class="label">Gain / Loss</div><div class="value ${gc}">${gl >= 0 ? '+' : ''}${gl}%</div><div class="sub">$${fmt(s.total_gain_loss)}</div></div>
-    <div class="metric-card"><div class="label">Volatility</div><div class="value">${(s.portfolio_volatility * 100).toFixed(1)}%</div><div class="sub">annualized</div></div>
-    <div class="metric-card"><div class="label">Sharpe</div><div class="value">${s.portfolio_sharpe}</div></div>
-    <div class="metric-card"><div class="label">Sortino</div><div class="value">${s.portfolio_sortino}</div><div class="sub">downside risk</div></div>
-    <div class="metric-card"><div class="label">Beta vs SPY</div><div class="value">${betaStr}</div><div class="sub">market sensitivity</div></div>
-    <div class="metric-card"><div class="label">Alpha</div><div class="value ${s.portfolio_alpha > 0 ? 'positive' : s.portfolio_alpha < 0 ? 'negative' : ''}">${alphaStr}</div><div class="sub">Jensen's alpha</div></div>
-    <div class="metric-card"><div class="label">Diversification</div><div class="value">${(s.diversification_score * 100).toFixed(0)}%</div></div>`;
+    <div class="metric-card">
+      <div class="label">Total Value</div>
+      <div class="value">$${fmt(s.total_value)}</div>
+      <div class="sub">cost $${fmt(s.total_cost)}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Price Return</div>
+      <div class="value ${signCls(s.total_gain_loss_pct)}">${s.total_gain_loss_pct >= 0 ? '+' : ''}${s.total_gain_loss_pct}%</div>
+      <div class="sub">$${fmt(s.total_gain_loss)}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Total Return</div>
+      <div class="value ${signCls(s.total_return_pct)}">${s.total_return_pct >= 0 ? '+' : ''}${s.total_return_pct}%</div>
+      <div class="sub">incl divs $${fmt(s.total_dividends_received || 0)}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Volatility</div>
+      <div class="value">${(s.portfolio_volatility * 100).toFixed(1)}%</div>
+      <div class="sub">annualized, ${lookbackLabel}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Sharpe</div>
+      <div class="value ${signCls(s.portfolio_sharpe)}">${fmtN(s.portfolio_sharpe)}</div>
+      <div class="sub">Rf ${rfPct}</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Sortino</div>
+      <div class="value ${signCls(s.portfolio_sortino)}">${fmtN(s.portfolio_sortino)}</div>
+      <div class="sub">downside only</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Calmar</div>
+      <div class="value ${signCls(s.portfolio_calmar)}">${fmtN(s.portfolio_calmar)}</div>
+      <div class="sub">return over max drawdown</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Treynor</div>
+      <div class="value ${signCls(s.portfolio_treynor)}">${fmtN(s.portfolio_treynor)}</div>
+      <div class="sub">excess return per beta</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Info Ratio</div>
+      <div class="value ${signCls(s.portfolio_information_ratio)}">${fmtN(s.portfolio_information_ratio)}</div>
+      <div class="sub">active return vs SPY</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Beta vs SPY</div>
+      <div class="value">${fmtN(s.portfolio_beta)}</div>
+      <div class="sub">252d OLS regression</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Alpha</div>
+      <div class="value ${signCls(s.portfolio_alpha)}">${fmtP(s.portfolio_alpha)}</div>
+      <div class="sub">Jensen CAPM</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">HHI</div>
+      <div class="value">${fmtN(s.hhi, 3)}</div>
+      <div class="sub">concentration, lower is better</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Effective N</div>
+      <div class="value">${fmtN(s.effective_n, 2)}</div>
+      <div class="sub">${s.num_holdings} positions held</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Div Ratio</div>
+      <div class="value">${fmtN(s.diversification_ratio)}</div>
+      <div class="sub">above 1 means diversified</div>
+    </div>`;
 
-  // AI Insight (now shown early)
+  // AI Insight
   const aiEl = document.getElementById('aiInsight');
   if (model_available && ai_insight) { aiEl.className = 'ai-box'; aiEl.textContent = ai_insight; }
-  else { aiEl.className = 'ai-box unavailable'; aiEl.textContent = model_available ? 'No insight generated.' : 'FinGPT model is offline. Start the Colab notebook to enable AI-powered insights and sentiment analysis.\nAll quantitative analytics above are fully functional without the model.'; }
+  else { aiEl.className = 'ai-box unavailable'; aiEl.textContent = model_available ? 'No insight generated.' : 'FinGPT model is offline. Start the Colab notebook to enable AI insights and sentiment analysis. All quantitative analytics above are fully functional without the model.'; }
 
-  // Holdings table
+  // Holdings table — with total return, dividends, tax, rsi label
   const tbody = document.getElementById('holdingsTable').querySelector('tbody');
   tbody.innerHTML = analytics.holdings.map(h => {
-    if (h.error) return `<tr><td>${h.symbol}</td><td colspan="12" style="color:var(--red)">${h.error}</td></tr>`;
+    if (h.error) return `<tr><td>${h.symbol}</td><td colspan="15" style="color:var(--red)">${h.error}</td></tr>`;
     const hgc = h.gain_loss_pct >= 0 ? 'positive' : 'negative';
-    const rc = h.rsi_14 < 30 ? 'positive' : h.rsi_14 > 70 ? 'negative' : '';
-    const rl = h.rsi_14 < 30 ? ' (OS)' : h.rsi_14 > 70 ? ' (OB)' : '';
+    const trc = h.total_return_pct >= 0 ? 'positive' : 'negative';
+    // RSI label comes from the backend (extreme_oversold, oversold, neutral, overbought, extreme_overbought)
+    const lbl = (h.rsi_label || '').toLowerCase();
+    const rsiCls = lbl.includes('overbought') ? 'negative' : lbl.includes('oversold') ? 'positive' : '';
+    const rsiTag = lbl && lbl !== 'neutral'
+      ? ` <small style="opacity:0.75;font-size:0.68rem">${lbl.replace(/_/g, ' ')}</small>`
+      : '';
+    // Tax cell
+    let taxCell = '-';
+    if (h.tax) {
+      if (h.tax.tax_owed > 0) {
+        taxCell = `<span class="negative">$${fmt(h.tax.tax_owed)}</span>`;
+      } else if (h.tax.loss_benefit > 0) {
+        taxCell = `<span class="positive">+$${fmt(h.tax.loss_benefit)}</span>`;
+      } else {
+        taxCell = '$0.00';
+      }
+    }
+    const fresh = (data.price_freshness || {})[h.symbol];
+    const stalePill = fresh && fresh.is_stale ? ` <small style="color:var(--yellow)" title="Stale: last traded ${fresh.latest_date}">stale</small>` : '';
     return `<tr>
-      <td><strong>${h.symbol}</strong></td><td>$${h.current_price}</td><td>$${fmt(h.position_value)}</td>
+      <td><strong>${h.symbol}</strong></td>
+      <td>$${h.current_price}${stalePill}</td>
+      <td>$${fmt(h.position_value)}</td>
       <td class="${hgc}">${h.gain_loss_pct >= 0 ? '+' : ''}${h.gain_loss_pct}%</td>
-      <td>${(h.volatility * 100).toFixed(1)}%</td><td>${h.sharpe_ratio}</td><td>${h.sortino_ratio}</td>
+      <td class="${trc}">${h.total_return_pct >= 0 ? '+' : ''}${h.total_return_pct}%</td>
+      <td>$${fmt(h.dividends_received || 0)}</td>
+      <td>${(h.volatility * 100).toFixed(1)}%</td>
+      <td>${h.sharpe_ratio}</td>
+      <td>${h.sortino_ratio}</td>
       <td>${h.beta != null ? h.beta.toFixed(2) : '-'}</td>
       <td class="${h.alpha > 0 ? 'positive' : h.alpha < 0 ? 'negative' : ''}">${h.alpha != null ? (h.alpha * 100).toFixed(2) + '%' : '-'}</td>
       <td>${(h.max_drawdown * 100).toFixed(1)}%</td>
-      <td>$${h.sma_20}</td><td>$${h.sma_50}</td>
-      <td class="${rc}">${h.rsi_14}${rl}</td>
+      <td>$${h.sma_20}</td>
+      <td>$${h.sma_50}</td>
+      <td class="${rsiCls}">${h.rsi_14}${rsiTag}</td>
+      <td>${taxCell}</td>
     </tr>`;
   }).join('');
 
@@ -642,25 +785,46 @@ function renderResults(data) {
   renderFrontier(efficient_frontier);
   renderCorrelation(correlation);
   renderStressTest(stress_test);
+  renderFactorAttribution(analytics);
+  renderTariff(analytics);
+  renderTaxPanel(analytics);
 
   // Options
   const stockSyms = analytics.holdings.filter(h => !h.error && !h.symbol.includes('-USD')).map(h => h.symbol);
   const op = document.getElementById('optionsPanel'), os = document.getElementById('optionsSymbol');
-  if (stockSyms.length) { op.style.display = 'block'; os.innerHTML = stockSyms.map(s => `<option value="${s}">${s}</option>`).join(''); onOptionsSymbolChange(); }
+  if (stockSyms.length) { op.style.display = 'block'; os.innerHTML = stockSyms.map(sy => `<option value="${sy}">${sy}</option>`).join(''); onOptionsSymbolChange(); }
   else { op.style.display = 'none'; }
 
-  // Macro
+  // Macro — v5: handle cpi_yoy error, unit suffix, friendly labels
   const me = document.getElementById('macroContainer');
   if (macro && Object.keys(macro).length) {
-    me.innerHTML = Object.entries(macro).map(([k, v]) => {
-      if (v.error) return '';
+    const order = ['fed_funds_rate', 'cpi_yoy', 'treasury_10y', 'unemployment', 'sp500'];
+    const labels = {
+      fed_funds_rate: 'Fed Funds Rate',
+      cpi_yoy: 'CPI Year over Year',
+      treasury_10y: '10 Year Treasury',
+      unemployment: 'Unemployment',
+      sp500: 'S and P 500 Level',
+    };
+    const keys = [...order.filter(k => macro[k]), ...Object.keys(macro).filter(k => !order.includes(k))];
+    me.innerHTML = keys.map(k => {
+      const v = macro[k];
+      if (!v) return '';
+      const label = labels[k] || k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      if (v.error) {
+        return `<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(35,38,64,0.5)"><span style="color:var(--muted)">${label}</span><span style="color:var(--muted);font-size:0.75rem">N/A</span></div>`;
+      }
+      const unit = v.unit === 'percent' ? '%' : '';
+      const rawVal = typeof v.value === 'string' ? parseFloat(v.value) : v.value;
+      const val = Number.isFinite(rawVal) ? rawVal.toFixed(2) : v.value;
       return `<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(35,38,64,0.5)">
-        <span style="color:var(--muted)">${k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</span>
-        <span><strong>${v.value}</strong> <small style="color:var(--muted)">(${v.date})</small></span></div>`;
+        <span style="color:var(--muted)">${label}</span>
+        <span><strong>${val}${unit}</strong> <small style="color:var(--muted)">(${v.date})</small></span>
+      </div>`;
     }).join('');
   } else { me.innerHTML = '<p style="color:var(--muted)">Could not fetch macro data</p>'; }
 
-  // Sentiment legend + News
+  // Sentiment legend and news
   document.getElementById('sentimentLegend').style.display = model_available ? 'flex' : 'none';
   const ne = document.getElementById('newsContainer');
   if (news && news.length) {
@@ -669,9 +833,123 @@ function renderResults(data) {
       const sent = a.fingpt_sentiment?.sentiment || '';
       if (sent) { const cls = sent.toLowerCase().includes('pos') ? 'positive' : sent.toLowerCase().includes('neg') ? 'negative' : 'neutral'; badge = `<span class="sentiment-badge sentiment-${cls}">${sent}</span>`; }
       const th = a.url ? `<a href="${a.url}" target="_blank" rel="noopener">${a.title}</a>` : a.title;
-      return `<div class="news-item"><div class="news-title">${th} ${badge}</div><div class="news-meta">${a.source} · ${a.published?.slice(0, 10) || ''}</div></div>`;
+      return `<div class="news-item"><div class="news-title">${th} ${badge}</div><div class="news-meta">${a.source} &middot; ${a.published?.slice(0, 10) || ''}</div></div>`;
     }).join('');
   } else { ne.innerHTML = '<p style="color:var(--muted)">No news available</p>'; }
+}
+
+// ── Factor Attribution (CAPM decomposition) ────────────────
+function renderFactorAttribution(analytics) {
+  const p = document.getElementById('factorPanel');
+  const s = analytics.summary;
+  if (s.portfolio_beta == null || s.portfolio_alpha == null || s.portfolio_geom_return == null || s.rf_annual_pct == null) {
+    p.style.display = 'none'; return;
+  }
+  p.style.display = 'block';
+  const rp = s.portfolio_geom_return;
+  const rf = s.rf_annual_pct / 100;
+  const alpha = s.portfolio_alpha;
+  const beta = s.portfolio_beta;
+  const excess = rp - rf;
+  const betaContrib = excess - alpha;
+  const impliedRm = beta !== 0 ? rf + betaContrib / beta : null;
+  const box = document.getElementById('factorAttribution');
+  const verdict = alpha > 0.005
+    ? 'Positive alpha: the portfolio is outperforming what its beta would predict. Some skill or some luck beyond pure market exposure.'
+    : alpha < -0.005
+      ? 'Negative alpha: the portfolio is underperforming what its beta would predict. Idiosyncratic bets have cost more than they earned.'
+      : 'Near zero alpha: returns are almost entirely explained by market exposure, with negligible idiosyncratic contribution.';
+  box.innerHTML = `
+    <div class="risk-grid">
+      <div class="risk-card"><div class="risk-label">Portfolio Return</div><div class="risk-value ${rp >= 0 ? 'positive' : 'negative'}">${(rp * 100).toFixed(2)}%</div><div class="risk-sub">geometric annualised</div></div>
+      <div class="risk-card"><div class="risk-label">Risk Free Rate</div><div class="risk-value">${(rf * 100).toFixed(2)}%</div><div class="risk-sub">10Y Treasury</div></div>
+      <div class="risk-card"><div class="risk-label">Excess Return</div><div class="risk-value ${excess >= 0 ? 'positive' : 'negative'}">${(excess * 100).toFixed(2)}%</div><div class="risk-sub">R_p minus Rf</div></div>
+      <div class="risk-card ${betaContrib >= 0 ? 'ok' : 'danger'}"><div class="risk-label">Beta Contribution</div><div class="risk-value ${betaContrib >= 0 ? 'positive' : 'negative'}">${(betaContrib * 100).toFixed(2)}%</div><div class="risk-sub">${beta.toFixed(2)} times market excess</div></div>
+      <div class="risk-card ${alpha >= 0 ? 'ok' : 'danger'}"><div class="risk-label">Alpha (Skill)</div><div class="risk-value ${alpha >= 0 ? 'positive' : 'negative'}">${(alpha * 100).toFixed(2)}%</div><div class="risk-sub">idiosyncratic residual</div></div>
+      ${impliedRm != null ? `<div class="risk-card"><div class="risk-label">Implied Market Return</div><div class="risk-value">${(impliedRm * 100).toFixed(2)}%</div><div class="risk-sub">SPY annualised</div></div>` : ''}
+    </div>
+    <div style="margin-top:14px;padding:12px 14px;background:var(--bg);border-radius:8px;font-size:0.82rem;line-height:1.7">
+      <strong>CAPM decomposition:</strong> R_p minus Rf equals beta times (R_m minus Rf) plus alpha.<br>
+      <span style="color:var(--muted)">${(excess * 100).toFixed(2)}% excess return equals ${(betaContrib * 100).toFixed(2)}% beta contribution plus ${(alpha * 100).toFixed(2)}% alpha.</span><br><br>
+      ${verdict}
+    </div>`;
+}
+
+// ── Tariff Exposure (AAPL China cost of goods sold shock) ──
+function renderTariff(analytics) {
+  const p = document.getElementById('tariffPanel');
+  const te = analytics.summary && analytics.summary.tariff_exposure;
+  if (!te) { p.style.display = 'none'; return; }
+  p.style.display = 'block';
+  const port = te.portfolio_impact_pct;
+  const aapl = te.aapl_price_impact_pct;
+  document.getElementById('tariffBox').innerHTML = `
+    <div class="risk-grid">
+      <div class="risk-card"><div class="risk-label">Tariff Rate</div><div class="risk-value">${te.tariff_rate_pct.toFixed(0)}%</div><div class="risk-sub">scenario input</div></div>
+      <div class="risk-card"><div class="risk-label">Pass Through</div><div class="risk-value">${te.pass_through_pct.toFixed(0)}%</div><div class="risk-sub">borne by consumer</div></div>
+      <div class="risk-card warning"><div class="risk-label">AAPL Earnings Hit</div><div class="risk-value negative">${te.earnings_reduction_pct.toFixed(2)}%</div><div class="risk-sub">of net income</div></div>
+      <div class="risk-card danger"><div class="risk-label">AAPL Price Impact</div><div class="risk-value negative">${aapl.toFixed(2)}%</div><div class="risk-sub">constant P over E translation</div></div>
+      <div class="risk-card ${Math.abs(port) > 5 ? 'danger' : 'warning'}"><div class="risk-label">Portfolio Impact</div><div class="risk-value negative">${port.toFixed(2)}%</div><div class="risk-sub">weight adjusted</div></div>
+    </div>
+    <div style="margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:8px;font-size:0.78rem;color:var(--muted);line-height:1.6">
+      <strong style="color:var(--text)">Model inputs:</strong> China COGS $${te.assumptions.china_cogs_bn}B, AAPL net income $${te.assumptions.net_income_bn}B, reference PE ${te.assumptions.pe_ratio_reference}, translation: ${te.assumptions.translation}.<br>
+      Dollar hit equals tariff rate times China COGS times (1 minus pass through), divided by net income gives earnings drop percent, which under constant PE equals the price drop percent.
+    </div>`;
+}
+
+// ── Tax Liability (per holding LTCG at 23.8 percent) ───────
+function renderTaxPanel(analytics) {
+  const p = document.getElementById('taxPanel');
+  const taxable = (analytics.holdings || []).filter(h => !h.error && h.tax);
+  if (!taxable.length) { p.style.display = 'none'; return; }
+  p.style.display = 'block';
+  let totalOwed = 0, totalBenefit = 0, totalAfterTax = 0;
+  const rows = taxable.map(h => {
+    const t = h.tax;
+    totalOwed += t.tax_owed || 0;
+    totalBenefit += t.loss_benefit || 0;
+    totalAfterTax += t.after_tax_gain || 0;
+    if (t.loss_benefit > 0) {
+      return `<tr>
+        <td><strong>${h.symbol}</strong></td>
+        <td class="negative">$${fmt(h.gain_loss)}</td>
+        <td>$0.00</td>
+        <td class="positive">$${fmt(t.loss_benefit)}</td>
+        <td class="negative">$${fmt(h.gain_loss)}</td>
+        <td><span style="color:var(--yellow);font-size:0.72rem">Harvestable loss</span></td>
+      </tr>`;
+    }
+    return `<tr>
+      <td><strong>${h.symbol}</strong></td>
+      <td class="positive">$${fmt(h.gain_loss)}</td>
+      <td class="negative">$${fmt(t.tax_owed || 0)}</td>
+      <td>$0.00</td>
+      <td class="positive">$${fmt(t.after_tax_gain || 0)}</td>
+      <td><span style="color:var(--muted);font-size:0.72rem">LTCG 23.8%</span></td>
+    </tr>`;
+  }).join('');
+  document.getElementById('taxBox').innerHTML = `
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>Unrealised P and L</th><th>Tax Owed</th><th>Loss Benefit</th><th>After Tax</th><th>Type</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr style="border-top:2px solid var(--border);font-weight:700">
+            <td>Total</td>
+            <td></td>
+            <td class="negative">$${fmt(totalOwed)}</td>
+            <td class="positive">$${fmt(totalBenefit)}</td>
+            <td class="positive">$${fmt(totalAfterTax)}</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div style="margin-top:10px;font-size:0.78rem;color:var(--muted);line-height:1.6">
+      Rate is 23.8 percent: 20 percent federal long term capital gains plus 3.8 percent net investment income tax. All positions assumed held longer than one year because the backend has no purchase date.
+    </div>`;
 }
 
 // ── Candlestick Charts ─────────────────────────────────────
@@ -790,14 +1068,32 @@ function renderStressTest(st) {
   p.style.display = 'block';
   const el = document.getElementById('stressResults');
   el.innerHTML = `<div class="stress-row header"><div>Scenario</div><div>Market</div><div>Your Portfolio</div><div>Estimated Loss</div></div>
-    ${st.scenarios.map(s => { const sv = s.portfolio_return_pct < -30 ? 'negative' : s.portfolio_return_pct < -15 ? 'neutral' : '';
-      return `<div class="stress-row"><div><div class="stress-name">${s.name}</div><div class="stress-desc">${s.description}</div></div><div class="negative">${s.market_return_pct}%</div><div class="${sv}">${s.portfolio_return_pct}%</div><div class="negative">$${fmt(Math.abs(s.portfolio_loss_dollar))}</div></div>`;
+    ${st.scenarios.map(sc => {
+      const sv = sc.portfolio_return_pct < -30 ? 'negative' : sc.portfolio_return_pct < -15 ? 'neutral' : '';
+      return `<div class="stress-row">
+        <div><div class="stress-name">${sc.name}</div><div class="stress-desc">${sc.description}${sc.period ? ' (' + sc.period + ')' : ''}</div></div>
+        <div class="negative">${sc.market_return_pct}%</div>
+        <div class="${sv}">${sc.portfolio_return_pct}%</div>
+        <div class="negative">$${fmt(Math.abs(sc.portfolio_loss_dollar))}</div>
+      </div>`;
     }).join('')}`;
   if (st.betas && Object.keys(st.betas).length > 1) {
-    el.innerHTML += `<div style="margin-top:16px"><h3>Per-Holding Beta</h3><div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
+    el.innerHTML += `<div style="margin-top:16px"><h3>Per Holding Beta</h3><div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
       ${Object.entries(st.betas).map(([sym, b]) => `<div class="risk-card ${b > 1.2 ? 'danger' : b < 0.8 ? 'ok' : 'warning'}" style="min-width:100px"><div class="risk-label">${sym}</div><div class="risk-value">${b.toFixed(2)}</div><div class="risk-sub">${b > 1.2 ? 'High risk' : b < 0.8 ? 'Defensive' : 'Moderate'}</div></div>`).join('')}
     </div></div>`;
   }
+  // Reverse stress test
+  const rev = st.reverse_stress_test;
+  const revBox = document.getElementById('reverseStressBox');
+  if (rev) {
+    revBox.innerHTML = `<h3>Reverse Stress Test</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:8px">
+        <div class="risk-card warning"><div class="risk-label">Loss Threshold</div><div class="risk-value negative">${rev.loss_threshold_pct.toFixed(0)}%</div><div class="risk-sub">portfolio drawdown target</div></div>
+        <div class="risk-card danger"><div class="risk-label">Required Market Drop</div><div class="risk-value negative">${rev.market_drop_pct_needed.toFixed(1)}%</div><div class="risk-sub">SPY would need to fall</div></div>
+        <div class="risk-card"><div class="risk-label">Portfolio Beta</div><div class="risk-value">${rev.portfolio_beta.toFixed(2)}</div><div class="risk-sub">canonical 252d OLS</div></div>
+      </div>
+      <div style="margin-top:10px;padding:10px 12px;background:var(--bg);border-radius:8px;font-size:0.8rem;color:var(--muted);line-height:1.6">${rev.explanation}</div>`;
+  } else { revBox.innerHTML = ''; }
 }
 
 // ── Allocation ─────────────────────────────────────────────
@@ -812,28 +1108,109 @@ function fmt(n) { return Number(n).toLocaleString('en-US', { minimumFractionDigi
 
 // ── Options ────────────────────────────────────────────────
 async function onOptionsSymbolChange() {
-  const sym = document.getElementById('optionsSymbol').value; if (!sym) return;
-  try { const r = await fetch(`/api/options/${sym}`); if (!r.ok) { document.getElementById('callsTable').querySelector('tbody').innerHTML = '<tr><td colspan="7" style="color:var(--muted)">No data</td></tr>'; document.getElementById('putsTable').querySelector('tbody').innerHTML = '<tr><td colspan="7" style="color:var(--muted)">No data</td></tr>'; return; }
-    const d = await r.json(); document.getElementById('optionsExpiry').innerHTML = d.expirations.map(e => `<option value="${e}" ${e === d.expiration ? 'selected' : ''}>${e}</option>`).join(''); renderOptionsChain(d);
-  } catch (e) { console.error(e); }
+  const sym = document.getElementById('optionsSymbol').value;
+  if (!sym) return;
+  try {
+    const r = await fetch(`/api/options/${sym}`);
+    if (!r.ok) { _emptyChain(); return; }
+    const d = await r.json();
+    document.getElementById('optionsExpiry').innerHTML = (d.expirations || []).map(e => `<option value="${e}" ${e === d.expiration ? 'selected' : ''}>${e}</option>`).join('');
+    renderOptionsChain(d);
+  } catch (e) { console.error(e); _emptyChain(); }
 }
 async function fetchOptions() {
-  const sym = document.getElementById('optionsSymbol').value, exp = document.getElementById('optionsExpiry').value;
+  const sym = document.getElementById('optionsSymbol').value;
+  const exp = document.getElementById('optionsExpiry').value;
   if (!sym || !exp) return;
-  try { const r = await fetch(`/api/options/${sym}?expiration=${exp}`); if (!r.ok) return; renderOptionsChain(await r.json()); } catch (e) { console.error(e); }
+  try {
+    const r = await fetch(`/api/options/${sym}?expiration=${exp}`);
+    if (!r.ok) { _emptyChain(); return; }
+    renderOptionsChain(await r.json());
+  } catch (e) { console.error(e); _emptyChain(); }
+}
+function _emptyChain() {
+  document.getElementById('callsTable').querySelector('tbody').innerHTML = '<tr><td colspan="11" style="color:var(--muted)">No data</td></tr>';
+  document.getElementById('putsTable').querySelector('tbody').innerHTML = '<tr><td colspan="11" style="color:var(--muted)">No data</td></tr>';
+  document.getElementById('optionsSummary').innerHTML = '';
 }
 function renderOptionsChain(d) {
-  function rt(id, cs) { const tb = document.getElementById(id).querySelector('tbody'); if (!cs?.length) { tb.innerHTML = '<tr><td colspan="7" style="color:var(--muted)">No contracts</td></tr>'; return; }
-    tb.innerHTML = cs.map(c => `<tr><td>$${c.strike}</td><td>$${c.lastPrice}</td><td>$${c.bid}</td><td>$${c.ask}</td><td>${(c.impliedVolatility * 100).toFixed(1)}%</td><td>${c.volume}</td><td>${c.openInterest}</td></tr>`).join(''); }
-  rt('callsTable', d.calls); rt('putsTable', d.puts);
+  // Summary banner with put call ratio, IV skew, underlying spot
+  const pcOI = d.put_call_ratio_oi;
+  const pcVol = d.put_call_ratio_volume;
+  const pcCls = pcOI != null && pcOI > 1 ? 'negative' : pcOI != null && pcOI < 0.7 ? 'positive' : 'neutral';
+  const pcInterp = pcOI == null ? '' : pcOI > 1 ? 'bearish positioning' : pcOI < 0.7 ? 'bullish positioning' : 'neutral positioning';
+  const skew = d.iv_skew;
+  const skewCls = skew && skew.skew_points > 1 ? 'negative' : skew && skew.skew_points < -1 ? 'positive' : 'neutral';
+  const summary = document.getElementById('optionsSummary');
+  summary.innerHTML = `
+    <div class="risk-grid">
+      <div class="risk-card"><div class="risk-label">Underlying</div><div class="risk-value">${d.underlying_price != null ? '$' + d.underlying_price.toFixed(2) : 'N/A'}</div><div class="risk-sub">${d.symbol} spot</div></div>
+      <div class="risk-card"><div class="risk-label">Days to Expiry</div><div class="risk-value">${d.days_to_expiry || 'N/A'}</div><div class="risk-sub">${d.expiration || ''}</div></div>
+      <div class="risk-card"><div class="risk-label">Risk Free Rate</div><div class="risk-value">${d.risk_free_rate != null ? (d.risk_free_rate * 100).toFixed(2) + '%' : 'N/A'}</div><div class="risk-sub">10Y Treasury input</div></div>
+      <div class="risk-card ${pcCls === 'negative' ? 'danger' : pcCls === 'positive' ? 'ok' : 'warning'}">
+        <div class="risk-label">Put Call Ratio (OI)</div>
+        <div class="risk-value ${pcCls}">${pcOI != null ? pcOI.toFixed(2) : 'N/A'}</div>
+        <div class="risk-sub">${pcInterp}${pcVol != null ? ', vol ratio ' + pcVol.toFixed(2) : ''}</div>
+      </div>
+      ${skew ? `<div class="risk-card ${skewCls === 'negative' ? 'danger' : skewCls === 'positive' ? 'ok' : 'warning'}">
+        <div class="risk-label">IV Skew (10% OTM)</div>
+        <div class="risk-value ${skewCls}">${skew.skew_points >= 0 ? '+' : ''}${skew.skew_points.toFixed(2)} pts</div>
+        <div class="risk-sub">put IV ${(skew.put_iv * 100).toFixed(1)}% over call IV ${(skew.call_iv * 100).toFixed(1)}%</div>
+      </div>` : ''}
+    </div>
+    ${skew ? `<div style="margin-top:10px;font-size:0.78rem;color:var(--muted)">${skew.interpretation}</div>` : ''}`;
+
+  function rt(id, cs) {
+    const tb = document.getElementById(id).querySelector('tbody');
+    if (!cs || !cs.length) { tb.innerHTML = '<tr><td colspan="11" style="color:var(--muted)">No contracts</td></tr>'; return; }
+    tb.innerHTML = cs.map(c => {
+      const g = c.greeks || {};
+      const fmtG = (v, dp = 3) => (v == null || isNaN(v)) ? '-' : Number(v).toFixed(dp);
+      return `<tr>
+        <td>$${c.strike}</td>
+        <td>$${c.lastPrice}</td>
+        <td>$${c.bid}</td>
+        <td>$${c.ask}</td>
+        <td>${(c.impliedVolatility * 100).toFixed(1)}%</td>
+        <td>${fmtG(g.delta)}</td>
+        <td>${fmtG(g.gamma, 4)}</td>
+        <td>${fmtG(g.theta)}</td>
+        <td>${fmtG(g.vega)}</td>
+        <td>${c.volume}</td>
+        <td>${c.openInterest}</td>
+      </tr>`;
+    }).join('');
+  }
+  rt('callsTable', d.calls);
+  rt('putsTable', d.puts);
 }
 
 // ── Export ──────────────────────────────────────────────────
 function exportCSV() {
   if (!lastAnalysisData) return;
   const h = lastAnalysisData.analytics.holdings.filter(h => !h.error);
-  const hd = ['Symbol','Price','Value','Gain/Loss %','Volatility','Sharpe','Sortino','Beta','Alpha','Max Drawdown','SMA 20','SMA 50','RSI 14'];
-  const rows = h.map(s => [s.symbol, s.current_price, s.position_value, s.gain_loss_pct + '%', (s.volatility * 100).toFixed(1) + '%', s.sharpe_ratio, s.sortino_ratio, s.beta != null ? s.beta.toFixed(2) : 'N/A', s.alpha != null ? (s.alpha * 100).toFixed(2) + '%' : 'N/A', (s.max_drawdown * 100).toFixed(1) + '%', s.sma_20, s.sma_50, s.rsi_14]);
+  const hd = ['Symbol','Price','Value','Price Return %','Total Return %','Dividends Received','Volatility','Sharpe','Sortino','Beta','Alpha','Max Drawdown','SMA 20','SMA 50','RSI 14','RSI Label','Tax Owed','Loss Benefit','After Tax Gain'];
+  const rows = h.map(s => [
+    s.symbol,
+    s.current_price,
+    s.position_value,
+    s.gain_loss_pct + '%',
+    (s.total_return_pct != null ? s.total_return_pct + '%' : 'N/A'),
+    s.dividends_received != null ? s.dividends_received : 0,
+    (s.volatility * 100).toFixed(1) + '%',
+    s.sharpe_ratio,
+    s.sortino_ratio,
+    s.beta != null ? s.beta.toFixed(2) : 'N/A',
+    s.alpha != null ? (s.alpha * 100).toFixed(2) + '%' : 'N/A',
+    (s.max_drawdown * 100).toFixed(1) + '%',
+    s.sma_20,
+    s.sma_50,
+    s.rsi_14,
+    s.rsi_label || 'neutral',
+    s.tax ? s.tax.tax_owed : 0,
+    s.tax ? s.tax.loss_benefit : 0,
+    s.tax ? s.tax.after_tax_gain : 0,
+  ]);
   _download([hd, ...rows].map(r => r.join(',')).join('\n'), `portfolio_${new Date().toISOString().slice(0,10)}.csv`, 'text/csv');
 }
 function exportJSON() { if (!lastAnalysisData) return; _download(JSON.stringify(lastAnalysisData, null, 2), `portfolio_${new Date().toISOString().slice(0,10)}.json`, 'application/json'); }

@@ -61,6 +61,7 @@ class Holding(BaseModel):
     symbol: str
     shares: float
     avg_cost: float
+    dividends_per_share: float = 0.0  # Optional: total dividends per share since purchase
 
 
 class PortfolioRequest(BaseModel):
@@ -124,11 +125,38 @@ async def get_filings(ticker: str, filing_type: str = "10-K", count: int = 5):
 
 @app.get("/api/options/{symbol}")
 async def get_options(symbol: str, expiration: str = None):
-    """Get options chain for a stock symbol."""
-    result = await yf_client.get_options(symbol.upper(), expiration)
+    """Get options chain for a stock symbol, with Greeks and IV skew.
+
+    The risk free rate passed to Black Scholes is taken from the live 10Y
+    treasury if available, otherwise defaults to the Fed Funds rate, and
+    finally falls back to 4.35 percent.
+    """
+    rf = await _current_risk_free_rate()
+    result = await yf_client.get_options(symbol.upper(), expiration, risk_free_rate=rf)
     if "error" in result:
         raise HTTPException(404, result["error"])
     return result
+
+
+async def _current_risk_free_rate() -> float:
+    """Live risk free rate. Prefers 10Y treasury, then fed funds, then 4.35%."""
+    try:
+        macro = await fred.get_macro_snapshot()
+    except Exception:
+        return 0.0435
+    t10 = macro.get("treasury_10y", {})
+    if isinstance(t10, dict) and "value" in t10:
+        try:
+            return float(t10["value"]) / 100.0
+        except Exception:
+            pass
+    ff = macro.get("fed_funds_rate", {})
+    if isinstance(ff, dict) and "value" in ff:
+        try:
+            return float(ff["value"]) / 100.0
+        except Exception:
+            pass
+    return 0.0435
 
 
 @app.post("/api/portfolio/analyze")
@@ -162,6 +190,7 @@ async def analyze(req: PortfolioRequest):
     daily_results = await asyncio.gather(*[_fetch_daily(s) for s in fetch_symbols])
     daily_data = {}
     market_data = None
+    price_freshness: dict[str, dict] = {}
     for sym, data in daily_results:
         if sym == "SPY" and "SPY" not in symbols:
             market_data = data
@@ -169,6 +198,17 @@ async def analyze(req: PortfolioRequest):
             daily_data[sym] = data
             if not data:
                 warnings.append(f"Could not fetch price data for {sym}")
+            else:
+                # The freshness metadata is attached to the newest row.
+                head = data[0]
+                price_freshness[sym] = {
+                    "latest_date": head.get("date"),
+                    "fetched_at": head.get("fetched_at"),
+                    "age_days": head.get("age_days"),
+                    "is_stale": head.get("is_stale", False),
+                }
+                if head.get("is_stale"):
+                    warnings.append(f"{sym} price data is {head.get('age_days')} days old, may be stale")
 
     # 2. Macro + news IN PARALLEL
     macro_task = fred.get_macro_snapshot()
@@ -177,17 +217,28 @@ async def analyze(req: PortfolioRequest):
         macro_task, news_task, return_exceptions=True
     )
 
-    # Process macro
-    risk_free = 0.05
+    # Process macro. Risk free rate priority: 10Y treasury (preferred for
+    # long horizon portfolio analytics), then Fed Funds, then a 4.35 percent
+    # fallback. Spec module 12 calls the 10Y treasury the canonical choice.
+    risk_free = 0.0435
     if isinstance(macro_result, Exception):
         logger.warning("Failed to fetch macro data: %s", macro_result)
-        warnings.append("Could not fetch macro indicators; using default risk-free rate (5%)")
+        warnings.append("Could not fetch macro indicators, using default risk free rate of 4.35 percent")
         macro = {}
     else:
         macro = macro_result
+        t10 = macro.get("treasury_10y", {})
         ffr = macro.get("fed_funds_rate", {})
-        if "value" in ffr:
-            risk_free = float(ffr["value"]) / 100
+        if isinstance(t10, dict) and "value" in t10:
+            try:
+                risk_free = float(t10["value"]) / 100.0
+            except Exception:
+                pass
+        elif isinstance(ffr, dict) and "value" in ffr:
+            try:
+                risk_free = float(ffr["value"]) / 100.0
+            except Exception:
+                pass
 
     # Process news
     if isinstance(news_result, Exception):
@@ -243,6 +294,13 @@ async def analyze(req: PortfolioRequest):
         "ai_insight": ai_insight,
         "model_available": model_available,
         "warnings": warnings,
+        "price_freshness": price_freshness,
+        "risk_free_rate": risk_free,
+        "risk_free_source": (
+            "treasury_10y" if isinstance(macro.get("treasury_10y"), dict) and "value" in macro.get("treasury_10y", {})
+            else "fed_funds_rate" if isinstance(macro.get("fed_funds_rate"), dict) and "value" in macro.get("fed_funds_rate", {})
+            else "fallback_4_35_pct"
+        ),
     }
 
 
@@ -266,30 +324,52 @@ async def model_analyze(req: AnalyzeTextRequest):
 # ── Helper ──────────────────────────────────────────────────
 
 def _build_insight_prompt(analytics: dict, macro: dict, news: list) -> str:
-    """Build a context string for FinGPT to generate portfolio insight."""
+    """Build a context string for FinGPT to generate portfolio insight.
+
+    Uses the v5 institutional metrics (HHI, Effective N, Diversification
+    Ratio, Treynor, Information Ratio) rather than the old diversification
+    score. Avoids hyphens in the plain text so the output is clean.
+    """
     summary = analytics.get("summary", {})
     holdings_text = ""
     for h in analytics.get("holdings", []):
         if "error" not in h:
             holdings_text += (
-                f"- {h['symbol']}: ${h['position_value']} "
-                f"(gain/loss: {h['gain_loss_pct']}%, vol: {h['volatility']}, "
-                f"sharpe: {h['sharpe_ratio']})\n"
+                f"* {h['symbol']}: ${h['position_value']} "
+                f"(total return: {h.get('total_return_pct', 'NA')}%, "
+                f"vol: {h.get('volatility', 'NA')}, "
+                f"sharpe: {h.get('sharpe_ratio', 'NA')}, "
+                f"beta: {h.get('beta', 'NA')})\n"
             )
 
     macro_text = ""
     for key, val in macro.items():
         if isinstance(val, dict) and "value" in val:
-            macro_text += f"- {key}: {val['value']} (as of {val['date']})\n"
+            unit = val.get("unit", "")
+            macro_text += f"* {key}: {val['value']} {unit} (as of {val['date']})\n"
 
-    headlines = "\n".join(f"- {a['title']}" for a in news[:5] if a.get("title"))
+    headlines = "\n".join(f"* {a['title']}" for a in news[:5] if a.get("title"))
+
+    tariff = summary.get("tariff_exposure") or {}
+    tariff_line = (
+        f"AAPL tariff drag: {tariff.get('portfolio_impact_pct')} percent "
+        f"(rate {tariff.get('tariff_rate_pct')}, pass through {tariff.get('pass_through_pct')})"
+    ) if tariff else "AAPL tariff drag: not applicable"
 
     return f"""Portfolio Summary:
-Total Value: ${summary.get('total_value', 'N/A')}
-Total Gain/Loss: {summary.get('total_gain_loss_pct', 'N/A')}%
-Portfolio Volatility: {summary.get('portfolio_volatility', 'N/A')}
-Sharpe Ratio: {summary.get('portfolio_sharpe', 'N/A')}
-Diversification: {summary.get('diversification_score', 'N/A')}
+Total Value: ${summary.get('total_value', 'NA')}
+Total Return: {summary.get('total_return_pct', 'NA')} percent (dividend adjusted)
+Annualized Volatility: {summary.get('portfolio_volatility', 'NA')}
+Sharpe Ratio: {summary.get('portfolio_sharpe', 'NA')}
+Sortino Ratio: {summary.get('portfolio_sortino', 'NA')}
+Treynor Ratio: {summary.get('portfolio_treynor', 'NA')}
+Information Ratio: {summary.get('portfolio_information_ratio', 'NA')}
+Portfolio Beta vs SPY: {summary.get('portfolio_beta', 'NA')}
+Jensen Alpha: {summary.get('portfolio_alpha', 'NA')}
+HHI Concentration: {summary.get('hhi', 'NA')}
+Effective N Holdings: {summary.get('effective_n', 'NA')}
+Diversification Ratio: {summary.get('diversification_ratio', 'NA')}
+{tariff_line}
 
 Holdings:
 {holdings_text}
@@ -298,7 +378,7 @@ Macro Indicators:
 Recent Headlines:
 {headlines}
 
-Based on the above data, provide a brief investment insight and risk assessment."""
+Based on the above data, provide a brief investment insight and risk assessment focused on the concentration, beta exposure, and tail risk."""
 
 
 @app.post("/api/cache/clear")

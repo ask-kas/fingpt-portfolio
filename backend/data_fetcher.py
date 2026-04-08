@@ -7,16 +7,38 @@ SEC EDGAR: No key, just a User-Agent string.
 """
 
 import asyncio
+import hashlib
 import httpx
 import logging
+import math
 import os
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import partial
+from urllib.parse import urlsplit, urlunsplit
 
 from backend.cache import cache
+from backend.options_math import black_scholes_call, black_scholes_put, greeks
+from backend.advanced_analytics import cpi_yoy_pct
 
 logger = logging.getLogger("fingpt.data")
+
+
+def _url_fingerprint(url: str) -> str:
+    """Normalize a URL and return a short hash fingerprint.
+
+    Strips query parameters and fragments so tracking parameters like
+    utm_source do not leak into the dedup key. Returns an empty string
+    for empty or invalid input.
+    """
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url.strip().lower())
+        cleaned = urlunsplit((parts.scheme or "https", parts.netloc, parts.path.rstrip("/"), "", ""))
+        return hashlib.sha1(cleaned.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
 
 
 async def _run_sync(func, *args, **kwargs):
@@ -67,6 +89,13 @@ class YFinanceClient:
         }
 
     def _get_daily_sync(self, symbol: str, days: int = 100) -> list[dict]:
+        """Fetch daily OHLCV bars from yfinance.
+
+        Returns a list of rows, newest first. Each row carries the trading
+        date. Freshness metadata (fetched_at, age_days, is_stale) is added
+        to the first row only so callers can surface staleness in the UI
+        without bloating every bar. Spec item P1.2.
+        """
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period=f"{days}d")
 
@@ -85,11 +114,38 @@ class YFinanceClient:
             })
 
         rows.reverse()  # newest first
+
+        # Attach freshness metadata to the newest row.
+        if rows:
+            fetched_at = datetime.now(timezone.utc)
+            try:
+                latest_trading_date = datetime.strptime(rows[0]["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                age_days = (fetched_at - latest_trading_date).days
+            except Exception:
+                age_days = 0
+            rows[0]["fetched_at"] = fetched_at.strftime("%Y-%m-%d %H:%M UTC")
+            rows[0]["age_days"] = age_days
+            # Crypto trades 7 days a week; stocks can be 3+ days old over weekends.
+            is_crypto = "-USD" in symbol.upper()
+            threshold = 1 if is_crypto else 4
+            rows[0]["is_stale"] = bool(age_days > threshold)
+
         return rows
 
     def _get_news_sync(self, symbols: list[str], limit: int = 10) -> list[dict]:
+        """Fetch news for a set of tickers and deduplicate by URL fingerprint.
+
+        Step 1: For each symbol, pull the yfinance news list.
+        Step 2: Normalise the URL, strip tracking params, hash the path.
+        Step 3: Skip any article whose URL hash has already been seen.
+        Step 4: Also skip exact title duplicates as a second line of defence
+                (some syndicated wire stories reuse URLs inconsistently).
+
+        Spec item P2.10.
+        """
         articles = []
-        seen_titles = set()
+        seen_url_hashes: set[str] = set()
+        seen_titles: set[str] = set()
 
         for sym in symbols:
             try:
@@ -103,22 +159,33 @@ class YFinanceClient:
                     content = item.get("content", item)
 
                     title = content.get("title", "") or item.get("title", "")
-                    if not title or title in seen_titles:
+                    if not title:
                         continue
-                    seen_titles.add(title)
+
+                    # Extract URL first so we can dedup on it.
+                    canonical = content.get("canonicalUrl", {})
+                    url = canonical.get("url", "") if isinstance(canonical, dict) else str(canonical)
+                    if not url:
+                        url = item.get("link", "")
+
+                    url_hash = _url_fingerprint(url)
+                    norm_title = title.strip().lower()
+
+                    if url_hash and url_hash in seen_url_hashes:
+                        continue
+                    if norm_title in seen_titles:
+                        continue
+
+                    if url_hash:
+                        seen_url_hashes.add(url_hash)
+                    seen_titles.add(norm_title)
 
                     # Extract publish date
                     published = content.get("pubDate", "") or item.get("providerPublishTime", "")
                     if isinstance(published, (int, float)):
                         published = datetime.fromtimestamp(published).strftime("%Y-%m-%d")
                     elif isinstance(published, str) and "T" in published:
-                        published = published[:10]  # "2026-04-06T14:30:00Z" -> "2026-04-06"
-
-                    # Extract URL
-                    canonical = content.get("canonicalUrl", {})
-                    url = canonical.get("url", "") if isinstance(canonical, dict) else str(canonical)
-                    if not url:
-                        url = item.get("link", "")
+                        published = published[:10]  # "2026 04 06T14:30:00Z" becomes "2026 04 06"
 
                     # Extract source
                     provider = content.get("provider", {})
@@ -130,6 +197,7 @@ class YFinanceClient:
                     articles.append({
                         "title": title,
                         "url": url,
+                        "url_hash": url_hash,
                         "summary": summary[:200] if summary else "",
                         "source": source,
                         "published": str(published),
@@ -200,7 +268,14 @@ class YFinanceClient:
 
     # ── Options chain ────────────────────────────────────────
 
-    def _get_options_sync(self, symbol: str, expiration: str = None) -> dict:
+    def _get_options_sync(self, symbol: str, expiration: str = None, risk_free_rate: float = 0.0435) -> dict:
+        """Fetch the options chain for a symbol and enrich it with analytics.
+
+        Each contract is augmented with Black Scholes Greeks computed from
+        the market implied volatility. The response also carries the put
+        call ratio (open interest weighted) and an implied volatility skew
+        summary (25 delta proxy). Spec items P2.9 and P3.15.
+        """
         import numpy as np
         ticker = yf.Ticker(symbol)
         expirations = ticker.options
@@ -210,37 +285,127 @@ class YFinanceClient:
         exp = expiration if expiration and expiration in expirations else expirations[0]
         chain = ticker.option_chain(exp)
 
-        def format_chain(df):
+        # Need current underlying price to compute Greeks.
+        spot = None
+        try:
+            hist = ticker.history(period="2d")
+            if not hist.empty:
+                spot = float(hist["Close"].iloc[-1])
+        except Exception:
+            spot = None
+
+        # Time to expiry in years.
+        try:
+            exp_date = datetime.strptime(exp, "%Y-%m-%d")
+            days_to_exp = max((exp_date - datetime.utcnow()).days, 1)
+        except Exception:
+            days_to_exp = 30
+        T = days_to_exp / 365.0
+
+        def format_chain(df, option_type: str):
             rows = []
             for _, row in df.iterrows():
-                rows.append({
-                    "strike": float(row["strike"]),
+                strike = float(row["strike"])
+                iv = float(row["impliedVolatility"]) if not np.isnan(row["impliedVolatility"]) else 0.0
+                contract = {
+                    "strike": strike,
                     "lastPrice": float(row["lastPrice"]),
                     "bid": float(row["bid"]),
                     "ask": float(row["ask"]),
                     "volume": int(row["volume"]) if not np.isnan(row["volume"]) else 0,
                     "openInterest": int(row["openInterest"]) if not np.isnan(row["openInterest"]) else 0,
-                    "impliedVolatility": round(float(row["impliedVolatility"]), 4),
-                })
+                    "impliedVolatility": round(iv, 4),
+                }
+                if spot is not None and iv > 1e-4 and T > 0 and strike > 0:
+                    try:
+                        g = greeks(spot, strike, risk_free_rate, T, iv, option_type)
+                        contract["greeks"] = g.to_dict()
+                        contract["theoretical_price"] = round(
+                            black_scholes_call(spot, strike, risk_free_rate, T, iv)
+                            if option_type == "call"
+                            else black_scholes_put(spot, strike, risk_free_rate, T, iv),
+                            2,
+                        )
+                        contract["moneyness"] = round((spot - strike) / spot, 4) if option_type == "call" else round((strike - spot) / spot, 4)
+                    except Exception:
+                        contract["greeks"] = None
+                        contract["theoretical_price"] = None
+                        contract["moneyness"] = None
+                else:
+                    contract["greeks"] = None
+                    contract["theoretical_price"] = None
+                    contract["moneyness"] = None
+                rows.append(contract)
             return rows
+
+        calls = format_chain(chain.calls, "call")
+        puts = format_chain(chain.puts, "put")
+
+        # Put call ratio, weighted by open interest (the standard convention).
+        total_call_oi = sum(c["openInterest"] for c in calls)
+        total_put_oi = sum(p["openInterest"] for p in puts)
+        total_call_vol = sum(c["volume"] for c in calls)
+        total_put_vol = sum(p["volume"] for p in puts)
+        pc_ratio_oi = round(total_put_oi / total_call_oi, 3) if total_call_oi else None
+        pc_ratio_vol = round(total_put_vol / total_call_vol, 3) if total_call_vol else None
+
+        # IV skew: compare the IV of an out of the money put to an equally
+        # out of the money call. We use the 10 percent OTM proxy which is a
+        # decent stand in for 25 delta when the surface is not too extreme.
+        skew = None
+        if spot is not None and calls and puts:
+            target_otm = 0.10
+            otm_put_strike = spot * (1 - target_otm)
+            otm_call_strike = spot * (1 + target_otm)
+            def _nearest(chain_list, target_strike):
+                valid = [c for c in chain_list if c["impliedVolatility"] > 1e-4]
+                if not valid:
+                    return None
+                return min(valid, key=lambda c: abs(c["strike"] - target_strike))
+            put_anchor = _nearest(puts, otm_put_strike)
+            call_anchor = _nearest(calls, otm_call_strike)
+            if put_anchor and call_anchor:
+                skew_value = put_anchor["impliedVolatility"] - call_anchor["impliedVolatility"]
+                skew = {
+                    "put_iv": round(put_anchor["impliedVolatility"], 4),
+                    "put_strike": put_anchor["strike"],
+                    "call_iv": round(call_anchor["impliedVolatility"], 4),
+                    "call_strike": call_anchor["strike"],
+                    "skew_points": round(skew_value * 100, 2),  # percentage points
+                    "method": "10 percent OTM proxy",
+                    "interpretation": (
+                        "Put skew: downside is pricier than upside. Markets are paying up for protection."
+                        if skew_value > 0.01
+                        else "Flat skew: upside and downside are roughly equally priced."
+                        if abs(skew_value) <= 0.01
+                        else "Call skew: upside calls are pricier. Speculative euphoria, rare in equities."
+                    ),
+                }
 
         return {
             "symbol": symbol,
             "expiration": exp,
             "expirations": list(expirations),
-            "calls": format_chain(chain.calls),
-            "puts": format_chain(chain.puts),
+            "underlying_price": round(spot, 2) if spot is not None else None,
+            "days_to_expiry": days_to_exp,
+            "risk_free_rate": risk_free_rate,
+            "calls": calls,
+            "puts": puts,
+            "put_call_ratio_oi": pc_ratio_oi,
+            "put_call_ratio_volume": pc_ratio_vol,
+            "iv_skew": skew,
+            "greeks_method": "black_scholes_with_market_iv",
         }
 
-    async def get_options(self, symbol: str, expiration: str = None) -> dict:
-        """Get options chain for a symbol."""
-        cache_key = f"options:{symbol}:{expiration or 'nearest'}"
+    async def get_options(self, symbol: str, expiration: str = None, risk_free_rate: float = 0.0435) -> dict:
+        """Get options chain for a symbol enriched with Black Scholes Greeks."""
+        cache_key = f"options:{symbol}:{expiration or 'nearest'}:{risk_free_rate:.4f}"
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
         try:
-            result = await _run_sync(self._get_options_sync, symbol, expiration)
+            result = await _run_sync(self._get_options_sync, symbol, expiration, risk_free_rate)
             if "error" not in result:
                 cache.set(cache_key, result, ttl_seconds=900)  # 15 min
             return result
@@ -250,7 +415,13 @@ class YFinanceClient:
 
 
 class FREDClient:
-    """Fetches macro indicators from the Federal Reserve Economic Data API."""
+    """Fetches macro indicators from the Federal Reserve Economic Data API.
+
+    CPI is a special case. The raw CPIAUCSL series is an index (currently
+    around 327). To be useful it has to be converted to a year over year
+    percentage change. We fetch 13 months and compute YoY ourselves rather
+    than leaning on a FRED derived series. Spec item P1.1.
+    """
 
     BASE = "https://api.stlouisfed.org/fred/series/observations"
 
@@ -284,12 +455,16 @@ class FREDClient:
             ]
 
     async def get_macro_snapshot(self) -> dict:
-        """Get latest value of all key macro indicators (fetched in parallel)."""
+        """Get latest value of all key macro indicators (fetched in parallel).
+
+        CPI is returned as a year over year percentage rather than the raw
+        index value. All other series return the most recent observation.
+        """
         cached = cache.get("macro_snapshot")
         if cached is not None:
             return cached
 
-        async def _fetch_one(name, series_id):
+        async def _fetch_standard(name, series_id):
             try:
                 obs = await self.get_indicator(series_id, limit=1)
                 if obs:
@@ -297,13 +472,42 @@ class FREDClient:
                         "value": obs[0]["value"],
                         "date": obs[0]["date"],
                         "series_id": series_id,
+                        "unit": "percent" if series_id in ("FEDFUNDS", "UNRATE", "DGS10") else "index",
                     }
                 return name, {"error": "No observations"}
             except Exception as e:
                 logger.error("Failed to fetch FRED indicator %s (%s): %s", name, series_id, e)
                 return name, {"error": str(e)}
 
-        results = await asyncio.gather(*[_fetch_one(n, s) for n, s in self.SERIES.items()])
+        async def _fetch_cpi_yoy(name, series_id):
+            try:
+                obs = await self.get_indicator(series_id, limit=13)
+                if len(obs) < 13:
+                    return name, {"error": "Not enough CPI history for year over year"}
+                current = float(obs[0]["value"])
+                year_ago = float(obs[12]["value"])
+                yoy_pct = cpi_yoy_pct(current, year_ago)
+                return name, {
+                    "value": f"{yoy_pct:.2f}",
+                    "date": obs[0]["date"],
+                    "series_id": series_id,
+                    "unit": "percent year over year",
+                    "cpi_current": round(current, 2),
+                    "cpi_year_ago": round(year_ago, 2),
+                    "description": "CPI all urban consumers, year over year change",
+                }
+            except Exception as e:
+                logger.error("Failed to compute CPI YoY: %s", e)
+                return name, {"error": str(e)}
+
+        tasks = []
+        for name, series_id in self.SERIES.items():
+            if name == "cpi_yoy":
+                tasks.append(_fetch_cpi_yoy(name, series_id))
+            else:
+                tasks.append(_fetch_standard(name, series_id))
+
+        results = await asyncio.gather(*tasks)
         snapshot = dict(results)
         cache.set("macro_snapshot", snapshot, ttl_seconds=14400)  # 4 hours
         return snapshot
