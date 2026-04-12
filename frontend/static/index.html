@@ -287,6 +287,47 @@
   .quality-ok { background: var(--yellow); }
   .quality-bad { background: var(--red); }
 
+  /* ── Auth Overlay ──────────────────────────── */
+  .auth-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: var(--bg); z-index: 2000;
+    display: flex; justify-content: center; align-items: center;
+    flex-direction: column;
+  }
+  .auth-overlay.hidden { display: none; }
+  .auth-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 36px 32px; width: 380px; max-width: 95%;
+    box-shadow: 0 24px 48px rgba(0,0,0,0.4);
+  }
+  .auth-card h2 {
+    font-size: 1.3rem; font-weight: 700; margin-bottom: 6px; text-align: center;
+  }
+  .auth-card h2 span { background: linear-gradient(135deg, var(--accent), var(--cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .auth-card .auth-sub { text-align: center; font-size: 0.82rem; color: var(--muted); margin-bottom: 20px; }
+  .auth-card label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px; margin-top: 12px; }
+  .auth-card input { width: 100%; }
+  .auth-card .auth-error { color: var(--red); font-size: 0.78rem; margin-top: 10px; text-align: center; min-height: 1.2em; }
+  .auth-card .btn-row { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; }
+  .auth-card .btn-primary { width: 100%; padding: 12px; font-size: 0.92rem; }
+  .auth-card .btn-switch { background: none; border: none; color: var(--accent2); font-size: 0.82rem; cursor: pointer; padding: 6px; }
+  .auth-card .btn-switch:hover { text-decoration: underline; }
+  .auth-card .btn-guest { background: transparent; border: 1px solid var(--border); color: var(--muted); width: 100%; padding: 10px; font-size: 0.82rem; }
+  .auth-card .btn-guest:hover { border-color: var(--accent); color: var(--text); }
+
+  /* ── User Bar ──────────────────────────────── */
+  .user-bar {
+    display: flex; align-items: center; gap: 10px; font-size: 0.82rem;
+  }
+  .user-bar .user-name { color: var(--accent2); font-weight: 600; }
+  .user-bar .btn-logout {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    padding: 4px 12px; border-radius: 6px; font-size: 0.72rem; cursor: pointer;
+  }
+  .user-bar .btn-logout:hover { border-color: var(--red); color: var(--red); }
+  .user-bar .save-indicator { font-size: 0.7rem; color: var(--green); opacity: 0; transition: opacity 0.3s; }
+  .user-bar .save-indicator.show { opacity: 1; }
+
   /* ── Candlestick panel ──────────────────────── */
   .candle-tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
   .candle-tab {
@@ -303,12 +344,57 @@
   <div class="info-modal" id="infoModal"></div>
 </div>
 
+<!-- Auth Overlay -->
+<div class="auth-overlay" id="authOverlay">
+  <div class="auth-card" id="authCard">
+    <!-- Login Form -->
+    <div id="loginForm">
+      <h2><span>FinGPT</span> Portfolio Analyzer</h2>
+      <div class="auth-sub">Sign in to save your portfolio and track history</div>
+      <label>Username</label>
+      <input id="loginUsername" placeholder="Enter username" onkeydown="if(event.key==='Enter')doLogin()">
+      <label>Password</label>
+      <input id="loginPassword" type="password" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()">
+      <div class="auth-error" id="loginError"></div>
+      <div class="btn-row">
+        <button class="btn-primary" onclick="doLogin()">Sign In</button>
+        <button class="btn-switch" onclick="showRegister()">No account? Create one</button>
+        <button class="btn-guest" onclick="enterGuest()">Continue as Guest</button>
+      </div>
+    </div>
+    <!-- Register Form -->
+    <div id="registerForm" style="display:none">
+      <h2><span>FinGPT</span> Create Account</h2>
+      <div class="auth-sub">Your portfolio will be saved automatically</div>
+      <label>Username</label>
+      <input id="regUsername" placeholder="Choose a username" onkeydown="if(event.key==='Enter')doRegister()">
+      <label>Email</label>
+      <input id="regEmail" type="email" placeholder="your@email.com">
+      <label>Password</label>
+      <input id="regPassword" type="password" placeholder="Min 8 characters" onkeydown="if(event.key==='Enter')doRegister()">
+      <div class="auth-error" id="regError"></div>
+      <div class="btn-row">
+        <button class="btn-primary" onclick="doRegister()">Create Account</button>
+        <button class="btn-switch" onclick="showLogin()">Already have an account? Sign in</button>
+        <button class="btn-guest" onclick="enterGuest()">Continue as Guest</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="container">
   <header>
     <h1><span>FinGPT</span> Portfolio Analyzer</h1>
-    <div class="status">
-      <div class="status-dot" id="modelStatus"></div>
-      <span id="modelStatusText">Checking model...</span>
+    <div style="display:flex;align-items:center;gap:16px">
+      <div class="user-bar" id="userBar" style="display:none">
+        <span class="save-indicator" id="saveIndicator">Saved</span>
+        <span class="user-name" id="userDisplayName"></span>
+        <button class="btn-logout" onclick="doLogout()">Sign Out</button>
+      </div>
+      <div class="status">
+        <div class="status-dot" id="modelStatus"></div>
+        <span id="modelStatusText">Checking model...</span>
+      </div>
     </div>
   </header>
 
@@ -790,7 +876,185 @@ let holdings = [
 let allocationChart = null;
 let lastAnalysisData = null;
 
-document.addEventListener('DOMContentLoaded', () => { renderHoldings(); checkHealth(); });
+// ── Session (persisted in localStorage) ────
+let _session = { userId: null, portfolioId: null, username: null };
+
+function _loadSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem('fingpt_session'));
+    if (s && s.userId) { _session = s; return true; }
+  } catch {}
+  return false;
+}
+function _saveSession() { localStorage.setItem('fingpt_session', JSON.stringify(_session)); }
+function _clearSession() { _session = { userId: null, portfolioId: null, username: null }; localStorage.removeItem('fingpt_session'); }
+function isLoggedIn() { return !!_session.userId; }
+
+// ── Auth UI ────────────────────────────────
+function showLogin() {
+  document.getElementById('loginForm').style.display = 'block';
+  document.getElementById('registerForm').style.display = 'none';
+  document.getElementById('loginError').textContent = '';
+}
+function showRegister() {
+  document.getElementById('loginForm').style.display = 'none';
+  document.getElementById('registerForm').style.display = 'block';
+  document.getElementById('regError').textContent = '';
+}
+
+async function doLogin() {
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  if (!username || !password) { errEl.textContent = 'Please fill in both fields.'; return; }
+  errEl.textContent = '';
+  try {
+    const r = await fetch('/api/db/users/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      errEl.textContent = e.detail || 'Invalid credentials';
+      return;
+    }
+    const user = await r.json();
+    _session.userId = user.id;
+    _session.username = user.username;
+    _saveSession();
+    await _loadUserPortfolio();
+    _enterApp();
+  } catch (e) { errEl.textContent = 'Connection error: ' + e.message; }
+}
+
+async function doRegister() {
+  const username = document.getElementById('regUsername').value.trim();
+  const email = document.getElementById('regEmail').value.trim();
+  const password = document.getElementById('regPassword').value;
+  const errEl = document.getElementById('regError');
+  if (!username || !email || !password) { errEl.textContent = 'Please fill in all fields.'; return; }
+  if (password.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; return; }
+  errEl.textContent = '';
+  try {
+    const r = await fetch('/api/db/users/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, password }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      errEl.textContent = e.detail || 'Registration failed';
+      return;
+    }
+    const user = await r.json();
+    _session.userId = user.id;
+    _session.username = user.username;
+    _saveSession();
+    await _loadUserPortfolio();
+    _enterApp();
+  } catch (e) { errEl.textContent = 'Connection error: ' + e.message; }
+}
+
+function enterGuest() { _clearSession(); _enterApp(); }
+
+function doLogout() {
+  _clearSession();
+  holdings = [
+    { symbol: 'AAPL', shares: 10, avg_cost: 170 },
+    { symbol: 'MSFT', shares: 5, avg_cost: 380 },
+    { symbol: 'GOOGL', shares: 3, avg_cost: 140 },
+  ];
+  renderHoldings();
+  document.getElementById('results').style.display = 'none';
+  document.getElementById('userBar').style.display = 'none';
+  document.getElementById('authOverlay').classList.remove('hidden');
+}
+
+function _enterApp() {
+  document.getElementById('authOverlay').classList.add('hidden');
+  if (isLoggedIn()) {
+    document.getElementById('userBar').style.display = 'flex';
+    document.getElementById('userDisplayName').textContent = _session.username;
+  } else {
+    document.getElementById('userBar').style.display = 'none';
+  }
+  renderHoldings();
+}
+
+// ── Load portfolio from DB ─────────────────
+async function _loadUserPortfolio() {
+  if (!_session.userId) return;
+  try {
+    // Get user's portfolios
+    const r = await fetch(`/api/db/users/${_session.userId}/portfolios`);
+    if (!r.ok) return;
+    const portfolios = await r.json();
+    if (!portfolios.length) return;
+    // Use the default portfolio, or the first one
+    const pf = portfolios.find(p => p.is_default) || portfolios[0];
+    _session.portfolioId = pf.id;
+    _saveSession();
+    // Load holdings
+    const hr = await fetch(`/api/db/portfolios/${pf.id}/holdings`);
+    if (!hr.ok) return;
+    const dbHoldings = await hr.json();
+    if (dbHoldings.length) {
+      holdings = dbHoldings.map(h => ({
+        symbol: h.symbol,
+        shares: h.shares,
+        avg_cost: h.avg_cost,
+        dividends_per_share: h.dividends_per_share || 0,
+      }));
+    }
+  } catch (e) { console.warn('Failed to load portfolio from DB:', e); }
+}
+
+// ── Save holdings to DB ────────────────────
+async function _syncHoldingsToDb() {
+  if (!isLoggedIn() || !_session.portfolioId) return;
+  try {
+    // Get current DB holdings
+    const r = await fetch(`/api/db/portfolios/${_session.portfolioId}/holdings`);
+    if (!r.ok) return;
+    const existing = await r.json();
+    // Delete all existing holdings first (clean sync)
+    await Promise.all(existing.map(h =>
+      fetch(`/api/db/holdings/${h.id}?user_id=${_session.userId}`, { method: 'DELETE' })
+    ));
+    // Add current holdings
+    const valid = holdings.filter(h => h.symbol && h.symbol.trim() && h.shares > 0);
+    await Promise.all(valid.map(h =>
+      fetch(`/api/db/portfolios/${_session.portfolioId}/holdings?user_id=${_session.userId}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: h.symbol.trim().toUpperCase(),
+          shares: h.shares,
+          avg_cost: h.avg_cost,
+          dividends_per_share: h.dividends_per_share || 0,
+        }),
+      })
+    ));
+    _flashSaved();
+  } catch (e) { console.warn('Failed to sync holdings:', e); }
+}
+
+function _flashSaved() {
+  const el = document.getElementById('saveIndicator');
+  if (!el) return;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+// ── Init ───────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  checkHealth();
+  if (_loadSession()) {
+    // Returning user — load portfolio and enter app
+    _loadUserPortfolio().then(() => { _enterApp(); });
+  } else {
+    // Show auth overlay
+    renderHoldings();
+  }
+});
 
 async function checkHealth() {
   try {
@@ -838,9 +1102,17 @@ async function analyzePortfolio() {
   document.getElementById('holdingsTable').querySelector('tbody').innerHTML = '<tr><td colspan="16" class="loader">Loading</td></tr>';
 
   try {
-    const r = await fetch('/api/portfolio/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ holdings: valid }) });
+    // Build analyze URL — if logged in, pass portfolio_id and user_id for auto-snapshot
+    let analyzeUrl = '/api/portfolio/analyze';
+    if (isLoggedIn() && _session.portfolioId) {
+      analyzeUrl += `?portfolio_id=${_session.portfolioId}&user_id=${_session.userId}`;
+    }
+    const r = await fetch(analyzeUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ holdings: valid }) });
     if (!r.ok) { const err = await r.json().catch(() => ({ detail: r.statusText })); throw new Error(err.detail || `Server error (${r.status})`); }
-    renderResults(await r.json());
+    const data = await r.json();
+    renderResults(data);
+    // Auto-save holdings to DB (non-blocking)
+    if (isLoggedIn()) _syncHoldingsToDb();
   } catch (e) {
     document.getElementById('summaryGrid').innerHTML = `<p style="color:var(--red)">Error: ${e.message}</p>`;
   }
