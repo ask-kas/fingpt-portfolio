@@ -11,6 +11,16 @@ import sys
 import asyncio
 from pathlib import Path
 
+# Load config/.env so FRED_API_KEY (and any other secrets) are available.
+_env_path = Path(__file__).parent.parent / "config" / ".env"
+if _env_path.exists():
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +39,9 @@ from backend.advanced_analytics import (
     efficient_frontier,
     correlation_matrix,
     stress_test,
+    what_if_simulation,
+    regime_detection,
+    data_quality_report,
 )
 
 # ── Logging ─────────────────────────────────────────────────
@@ -71,6 +84,13 @@ class PortfolioRequest(BaseModel):
 class AnalyzeTextRequest(BaseModel):
     text: str
     task: str = "sentiment"  # sentiment | headline | insight
+
+
+class WhatIfRequest(BaseModel):
+    holdings: list[Holding]
+    trade_symbol: str
+    trade_shares: float
+    trade_action: str = "buy"  # buy | sell
 
 
 # ── API Routes ──────────────────────────────────────────────
@@ -255,7 +275,7 @@ async def analyze(req: PortfolioRequest):
     mc_task = asyncio.to_thread(monte_carlo_simulation, daily_data, holdings)
     ef_task = asyncio.to_thread(efficient_frontier, daily_data, holdings, risk_free)
     corr_task = asyncio.to_thread(correlation_matrix, daily_data, symbols)
-    stress_task = asyncio.to_thread(stress_test, daily_data, holdings)
+    stress_task = asyncio.to_thread(stress_test, daily_data, holdings, None, market_data)
 
     mc_result, ef_result, corr_result, stress_result = await asyncio.gather(
         mc_task, ef_task, corr_task, stress_task, return_exceptions=True
@@ -319,6 +339,111 @@ async def model_analyze(req: AnalyzeTextRequest):
         return await model.generate_insight(req.text)
     else:
         raise HTTPException(400, f"Unknown task: {req.task}")
+
+
+@app.post("/api/whatif")
+async def what_if(req: WhatIfRequest):
+    """What-If Trade Simulator: simulate adding or removing a position."""
+    holdings = [h.model_dump() for h in req.holdings]
+    for h in holdings:
+        h["symbol"] = yf_client.normalize_symbol(h["symbol"])
+    trade_sym = yf_client.normalize_symbol(req.trade_symbol)
+    symbols = list({h["symbol"] for h in holdings} | {trade_sym})
+
+    async def _fetch(sym):
+        try:
+            return sym, await yf_client.get_daily(sym)
+        except Exception:
+            return sym, []
+
+    fetch_syms = list(set(symbols + ["SPY"]))
+    results = await asyncio.gather(*[_fetch(s) for s in fetch_syms])
+    daily_data = {}
+    market_data = None
+    for sym, data in results:
+        if sym == "SPY" and "SPY" not in symbols:
+            market_data = data
+        else:
+            daily_data[sym] = data
+
+    rf = await _current_risk_free_rate()
+    result = what_if_simulation(
+        daily_data, holdings, trade_sym, req.trade_shares,
+        req.trade_action, rf, market_data,
+    )
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/regime")
+async def regime(req: PortfolioRequest):
+    """Regime-Aware Risk Engine: rolling volatility regime detection."""
+    holdings = [h.model_dump() for h in req.holdings]
+    for h in holdings:
+        h["symbol"] = yf_client.normalize_symbol(h["symbol"])
+    symbols = [h["symbol"] for h in holdings]
+
+    async def _fetch(sym):
+        try:
+            return sym, await yf_client.get_daily(sym)
+        except Exception:
+            return sym, []
+
+    fetch_syms = symbols + (["SPY"] if "SPY" not in symbols else [])
+    results = await asyncio.gather(*[_fetch(s) for s in fetch_syms])
+    daily_data = {}
+    market_data = None
+    for sym, data in results:
+        if sym == "SPY" and "SPY" not in symbols:
+            market_data = data
+        else:
+            daily_data[sym] = data
+
+    result = await asyncio.to_thread(regime_detection, daily_data, holdings, market_data)
+    if isinstance(result, dict) and "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.get("/api/earnings")
+async def earnings_calendar(tickers: str = "AAPL"):
+    """Event-Risk Calendar: upcoming earnings dates and historical earnings-day returns."""
+    symbols = [t.strip().upper() for t in tickers.split(",")]
+    symbols = [s for s in symbols if s and "-USD" not in s]
+    if not symbols:
+        return []
+    return await yf_client.get_earnings_calendar(symbols)
+
+
+@app.post("/api/data-quality")
+async def data_quality(req: PortfolioRequest):
+    """Data Quality Dashboard: per-ticker data freshness, gaps, and quality score."""
+    holdings = [h.model_dump() for h in req.holdings]
+    for h in holdings:
+        h["symbol"] = yf_client.normalize_symbol(h["symbol"])
+    symbols = [h["symbol"] for h in holdings]
+
+    async def _fetch(sym):
+        try:
+            return sym, await yf_client.get_daily(sym)
+        except Exception:
+            return sym, []
+
+    results = await asyncio.gather(*[_fetch(s) for s in symbols])
+    daily_data = {sym: data for sym, data in results}
+
+    return data_quality_report(daily_data, symbols)
+
+
+@app.get("/api/holders")
+async def institutional_holders(tickers: str = "AAPL"):
+    """Legendary Investors: who among the top investors holds the same stocks as you."""
+    symbols = [t.strip().upper() for t in tickers.split(",")]
+    symbols = [s for s in symbols if s and "-USD" not in s]
+    if not symbols:
+        return {}
+    return await yf_client.get_institutional_holders(symbols)
 
 
 # ── Helper ──────────────────────────────────────────────────

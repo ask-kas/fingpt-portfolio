@@ -602,3 +602,354 @@ def _build_returns_dataframe(
         return None
 
     return prices_df
+
+
+# ── What-If Trade Simulator (feature 1) ──────────────────────
+
+def what_if_simulation(
+    daily_data: dict[str, list[dict]],
+    current_holdings: list[dict],
+    trade_symbol: str,
+    trade_shares: float,
+    trade_action: str,
+    risk_free: float = 0.0435,
+    market_data: list[dict] | None = None,
+) -> dict:
+    """Simulate adding or removing a position and return metric deltas.
+
+    trade_action is 'buy' or 'sell'. Returns before/after/delta for
+    Sharpe, volatility, beta, HHI, and VaR (95%, parametric).
+    """
+    from backend.portfolio import (
+        portfolio_volatility_full,
+        weighted_portfolio_beta,
+    )
+
+    def _metrics(hlds, dd):
+        weights, ret_mat, syms = _build_portfolio_matrix(dd, hlds)
+        if ret_mat is None or ret_mat.shape[0] < 20:
+            return None
+
+        # Market returns for beta
+        mkt_log = np.array([])
+        if market_data:
+            mkt_log = log_returns_from_prices([d["close"] for d in market_data])
+
+        n = ret_mat.shape[1]
+        cov = np.cov(ret_mat, rowvar=False, ddof=1)
+        if cov.ndim == 0:
+            cov = np.array([[float(cov)]])
+
+        vol = float(np.sqrt(weights @ cov @ weights)) * math.sqrt(TRADING_DAYS_STOCKS)
+        mean_ret = float(np.mean(ret_mat @ weights)) * TRADING_DAYS_STOCKS
+
+        sharpe = (mean_ret - risk_free) / vol if vol > 0 else 0.0
+
+        betas = {}
+        for i, sym in enumerate(syms):
+            if mkt_log.size:
+                b = beta_ols(ret_mat[:, i], mkt_log)
+                betas[sym] = float(b) if b is not None else 1.0
+            else:
+                betas[sym] = 1.0
+        port_beta = float(np.sum(weights * np.array([betas.get(s, 1.0) for s in syms])))
+
+        hhi = float(np.sum(weights ** 2))
+        eff_n = 1.0 / hhi if hhi > 0 else len(syms)
+
+        # Parametric VaR 95
+        var_95 = -(mean_ret / TRADING_DAYS_STOCKS * 30 - 1.645 * vol / math.sqrt(TRADING_DAYS_STOCKS) * math.sqrt(30)) * 100
+
+        total_val = sum(
+            h["shares"] * _latest_price(dd.get(h["symbol"], []))
+            for h in hlds
+        )
+
+        return {
+            "sharpe": round(sharpe, 4),
+            "volatility": round(vol, 4),
+            "beta": round(port_beta, 4),
+            "hhi": round(hhi, 4),
+            "effective_n": round(eff_n, 2),
+            "var_95_pct": round(var_95, 2),
+            "total_value": round(total_val, 2),
+            "weights": {s: round(float(w), 4) for s, w in zip(syms, weights)},
+        }
+
+    before = _metrics(current_holdings, daily_data)
+    if before is None:
+        return {"error": "Insufficient data for current portfolio"}
+
+    # Build modified holdings
+    modified = [dict(h) for h in current_holdings]
+    found = False
+    for h in modified:
+        if h["symbol"].upper() == trade_symbol.upper():
+            found = True
+            if trade_action == "sell":
+                h["shares"] = max(0, h["shares"] - trade_shares)
+            else:
+                h["shares"] += trade_shares
+            break
+
+    if not found and trade_action == "buy":
+        price = _latest_price(daily_data.get(trade_symbol.upper(), []))
+        modified.append({
+            "symbol": trade_symbol.upper(),
+            "shares": trade_shares,
+            "avg_cost": price,
+        })
+
+    modified = [h for h in modified if h["shares"] > 0]
+    if not modified:
+        return {"error": "Resulting portfolio would be empty"}
+
+    after = _metrics(modified, daily_data)
+    if after is None:
+        return {"error": "Insufficient data for modified portfolio"}
+
+    delta = {}
+    for k in before:
+        if k in ("weights", "total_value"):
+            continue
+        delta[k] = round(after[k] - before[k], 4)
+
+    return {
+        "trade": {"symbol": trade_symbol.upper(), "shares": trade_shares, "action": trade_action},
+        "before": before,
+        "after": after,
+        "delta": delta,
+    }
+
+
+# ── Regime-Aware Risk Engine (feature 2) ──────────────────────
+
+def regime_detection(
+    daily_data: dict[str, list[dict]],
+    holdings: list[dict],
+    market_data: list[dict] | None = None,
+    window: int = 21,
+) -> dict:
+    """Detect volatility regime and compute regime-conditional VaR.
+
+    Rolling 21-day realised volatility of the portfolio classifies into:
+    - low:      annualised vol < 12%
+    - normal:   12% to 20%
+    - elevated: 20% to 30%
+    - crisis:   > 30%
+
+    Returns rolling vol history, current regime, and regime-conditional VaR.
+    """
+    weights, ret_mat, syms = _build_portfolio_matrix(daily_data, holdings)
+    if ret_mat is None or ret_mat.shape[0] < window + 10:
+        return {"error": "Insufficient data for regime detection (need 30+ days)"}
+
+    port_rets = ret_mat @ weights  # daily log returns
+
+    # Rolling realised vol (annualised)
+    rolling_vol = []
+    dates = []
+
+    # Try to get dates from the first symbol's data
+    first_sym = syms[0] if syms else None
+    sym_data = daily_data.get(first_sym, []) if first_sym else []
+    all_dates = [d.get("date", "") for d in sym_data]
+    all_dates.reverse()  # oldest first
+
+    for i in range(window, len(port_rets)):
+        chunk = port_rets[i - window:i]
+        vol = float(np.std(chunk, ddof=1)) * math.sqrt(TRADING_DAYS_STOCKS)
+        rolling_vol.append(round(vol * 100, 2))
+        if i < len(all_dates):
+            dates.append(all_dates[i])
+        else:
+            dates.append(f"t-{len(port_rets) - i}")
+
+    if not rolling_vol:
+        return {"error": "Not enough data for rolling volatility"}
+
+    current_vol = rolling_vol[-1]
+
+    def _classify(v):
+        if v < 12:
+            return "low"
+        elif v < 20:
+            return "normal"
+        elif v < 30:
+            return "elevated"
+        else:
+            return "crisis"
+
+    current_regime = _classify(current_vol)
+
+    # Regime history
+    regime_history = [_classify(v) for v in rolling_vol]
+    regime_counts = {}
+    for r in regime_history:
+        regime_counts[r] = regime_counts.get(r, 0) + 1
+
+    # Regime-conditional VaR: compute VaR using only returns from the current regime
+    regime_returns = []
+    for i in range(window, len(port_rets)):
+        chunk = port_rets[i - window:i]
+        vol = float(np.std(chunk, ddof=1)) * math.sqrt(TRADING_DAYS_STOCKS)
+        r_class = _classify(vol * 100)
+        if r_class == current_regime:
+            regime_returns.append(float(port_rets[i]))
+
+    regime_returns = np.array(regime_returns) if regime_returns else port_rets
+
+    # Parametric VaR from regime-conditional returns
+    mu = float(np.mean(regime_returns)) * TRADING_DAYS_STOCKS
+    sigma = float(np.std(regime_returns, ddof=1)) * math.sqrt(TRADING_DAYS_STOCKS)
+    var_95_regime = -(mu / TRADING_DAYS_STOCKS * 30 - 1.645 * sigma / math.sqrt(TRADING_DAYS_STOCKS) * math.sqrt(30)) * 100
+
+    # Unconditional VaR for comparison
+    mu_all = float(np.mean(port_rets)) * TRADING_DAYS_STOCKS
+    sigma_all = float(np.std(port_rets, ddof=1)) * math.sqrt(TRADING_DAYS_STOCKS)
+    var_95_unconditional = -(mu_all / TRADING_DAYS_STOCKS * 30 - 1.645 * sigma_all / math.sqrt(TRADING_DAYS_STOCKS) * math.sqrt(30)) * 100
+
+    # Regime transition probabilities
+    transitions = {}
+    for i in range(1, len(regime_history)):
+        prev = regime_history[i - 1]
+        curr = regime_history[i]
+        key = f"{prev}_to_{curr}"
+        transitions[key] = transitions.get(key, 0) + 1
+
+    total_transitions = len(regime_history) - 1
+    if total_transitions > 0:
+        transitions = {k: round(v / total_transitions, 4) for k, v in transitions.items()}
+
+    return {
+        "current_regime": current_regime,
+        "current_vol_pct": round(current_vol, 2),
+        "regime_counts": regime_counts,
+        "regime_pct": {k: round(v / len(regime_history) * 100, 1) for k, v in regime_counts.items()},
+        "var_95_regime_conditional": round(var_95_regime, 2),
+        "var_95_unconditional": round(var_95_unconditional, 2),
+        "regime_vol_annualized": round(sigma * 100, 2),
+        "transitions": transitions,
+        "rolling_vol": rolling_vol[-60:],  # last 60 data points for chart
+        "rolling_dates": dates[-60:],
+        "window_days": window,
+    }
+
+
+# ── Data Quality Dashboard (feature 4) ────────────────────────
+
+def data_quality_report(
+    daily_data: dict[str, list[dict]],
+    symbols: list[str],
+) -> dict:
+    """Per-ticker data quality assessment.
+
+    Reports expected vs actual bars, missing percentage, zero volume days,
+    staleness, and gap detection (weekday gaps > 1 business day).
+    """
+    from datetime import datetime, timedelta
+
+    reports = {}
+    for sym in symbols:
+        data = daily_data.get(sym, [])
+        if not data:
+            reports[sym] = {
+                "status": "no_data",
+                "actual_bars": 0,
+                "expected_bars": 0,
+                "missing_pct": 100.0,
+                "zero_volume_days": 0,
+                "staleness_days": None,
+                "gaps": [],
+                "quality_score": 0,
+            }
+            continue
+
+        # Data is newest-first
+        dates_str = [d.get("date", "") for d in data]
+        dates_parsed = []
+        for ds in dates_str:
+            try:
+                dates_parsed.append(datetime.strptime(ds[:10], "%Y-%m-%d"))
+            except (ValueError, TypeError):
+                pass
+
+        if not dates_parsed:
+            reports[sym] = {
+                "status": "no_valid_dates",
+                "actual_bars": len(data),
+                "expected_bars": 0,
+                "missing_pct": 100.0,
+                "zero_volume_days": 0,
+                "staleness_days": None,
+                "gaps": [],
+                "quality_score": 0,
+            }
+            continue
+
+        newest = dates_parsed[0]
+        oldest = dates_parsed[-1]
+        actual_bars = len(data)
+
+        # Expected business days between oldest and newest
+        is_crypto = "-USD" in sym
+        if is_crypto:
+            expected_bars = (newest - oldest).days + 1
+        else:
+            # Count weekdays
+            expected_bars = int(np.busday_count(
+                oldest.strftime("%Y-%m-%d"),
+                (newest + timedelta(days=1)).strftime("%Y-%m-%d"),
+            ))
+
+        missing_pct = max(0, (1 - actual_bars / max(expected_bars, 1)) * 100)
+
+        # Zero volume days
+        zero_vol = sum(1 for d in data if d.get("volume", 1) == 0)
+
+        # Staleness
+        today = datetime.now()
+        staleness = (today - newest).days
+
+        # Gap detection (sorted oldest to newest)
+        sorted_dates = sorted(dates_parsed)
+        gaps = []
+        for i in range(1, len(sorted_dates)):
+            delta = (sorted_dates[i] - sorted_dates[i - 1]).days
+            threshold = 4 if not is_crypto else 2
+            if delta > threshold:
+                gaps.append({
+                    "from": sorted_dates[i - 1].strftime("%Y-%m-%d"),
+                    "to": sorted_dates[i].strftime("%Y-%m-%d"),
+                    "days": delta,
+                })
+
+        # Quality score (0-100)
+        completeness = min(actual_bars / max(expected_bars, 1), 1.0) * 40
+        freshness = max(0, 30 - staleness) / 30 * 30  # 30 points for being fresh
+        vol_quality = max(0, (1 - zero_vol / max(actual_bars, 1))) * 15
+        gap_penalty = min(len(gaps) * 5, 15)
+        quality_score = max(0, min(100, completeness + freshness + vol_quality + (15 - gap_penalty)))
+
+        reports[sym] = {
+            "status": "ok",
+            "actual_bars": actual_bars,
+            "expected_bars": expected_bars,
+            "missing_pct": round(missing_pct, 1),
+            "zero_volume_days": zero_vol,
+            "staleness_days": staleness,
+            "latest_date": newest.strftime("%Y-%m-%d"),
+            "oldest_date": oldest.strftime("%Y-%m-%d"),
+            "gaps": gaps[:5],  # cap at 5 gaps
+            "quality_score": round(quality_score, 1),
+        }
+
+    # Overall quality
+    scores = [r["quality_score"] for r in reports.values() if r.get("quality_score")]
+    overall = round(sum(scores) / len(scores), 1) if scores else 0
+
+    return {
+        "tickers": reports,
+        "overall_score": overall,
+        "ticker_count": len(symbols),
+    }

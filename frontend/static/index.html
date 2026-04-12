@@ -220,6 +220,73 @@
   .weight-bar { height: 20px; border-radius: 5px; background: var(--accent); min-width: 2px; transition: width 0.6s ease; }
   .weight-pct { width: 50px; color: var(--muted); font-size: 0.72rem; }
 
+  /* ── Navigation Bar ─────────────────────────── */
+  .nav-bar {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10,11,16,0.92); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px; margin: 0 -24px 20px;
+    overflow-x: auto; white-space: nowrap;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  .nav-bar::-webkit-scrollbar { height: 3px; }
+  .nav-bar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .nav-links { display: flex; gap: 0; min-width: max-content; }
+  .nav-link {
+    display: inline-block; padding: 10px 14px;
+    font-size: 0.72rem; font-weight: 600; color: var(--muted);
+    text-decoration: none; text-transform: uppercase; letter-spacing: 0.4px;
+    border-bottom: 2px solid transparent; transition: all 0.2s;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .nav-link:hover { color: var(--text); border-bottom-color: var(--accent); }
+  .nav-link.active { color: var(--accent2); border-bottom-color: var(--accent); }
+  @media (max-width: 768px) {
+    .nav-bar { padding: 0 12px; margin: 0 -12px 16px; }
+    .nav-link { padding: 8px 10px; font-size: 0.68rem; }
+  }
+
+  /* ── Legendary Investors ────────────────────── */
+  .investor-card {
+    background: var(--bg); border-radius: 10px; padding: 14px;
+    border-left: 3px solid var(--accent); margin-bottom: 8px;
+  }
+  .investor-card .inv-name { font-weight: 700; font-size: 0.92rem; }
+  .investor-card .inv-fund { font-size: 0.78rem; color: var(--accent2); }
+  .investor-card .inv-style { font-size: 0.72rem; color: var(--muted); margin-top: 2px; font-style: italic; }
+  .investor-card .inv-detail { font-size: 0.78rem; margin-top: 6px; }
+
+  /* ── What-If Simulator ─────────────────────── */
+  .whatif-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
+  .whatif-form label { font-size: 0.72rem; color: var(--muted); display: block; margin-bottom: 2px; }
+  .whatif-form input, .whatif-form select { width: 120px; }
+  .delta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+  .delta-card {
+    background: var(--bg); border-radius: 10px; padding: 12px; text-align: center;
+    border: 1px solid transparent; transition: border-color 0.2s;
+  }
+  .delta-card .d-label { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; font-weight: 600; }
+  .delta-card .d-before { font-size: 0.78rem; color: var(--muted); }
+  .delta-card .d-after { font-size: 1rem; font-weight: 700; }
+  .delta-card .d-delta { font-size: 0.78rem; font-weight: 600; margin-top: 2px; }
+
+  /* ── Regime Risk ───────────────────────────── */
+  .regime-badge {
+    display: inline-block; padding: 4px 12px; border-radius: 6px;
+    font-size: 0.82rem; font-weight: 700; text-transform: uppercase;
+  }
+  .regime-low { background: rgba(52,211,153,0.15); color: var(--green); }
+  .regime-normal { background: rgba(99,102,241,0.15); color: var(--accent2); }
+  .regime-elevated { background: rgba(251,191,36,0.15); color: var(--yellow); }
+  .regime-crisis { background: rgba(248,113,113,0.15); color: var(--red); }
+
+  /* ── Data Quality ──────────────────────────── */
+  .quality-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+  .quality-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+  .quality-good { background: var(--green); }
+  .quality-ok { background: var(--yellow); }
+  .quality-bad { background: var(--red); }
+
   /* ── Candlestick panel ──────────────────────── */
   .candle-tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
   .candle-tab {
@@ -259,24 +326,29 @@
   <!-- Results -->
   <div id="results" style="display:none">
 
+    <!-- Navigation Bar -->
+    <nav class="nav-bar" id="navBar">
+      <div class="nav-links" id="navLinks"></div>
+    </nav>
+
     <div id="warningsBanner" class="warnings-banner" style="display:none"></div>
 
     <!-- Summary -->
-    <div class="panel full-width">
+    <div class="panel full-width" id="sectionSummary">
       <h2><span class="section-badge"></span> Portfolio Summary <span class="info-btn" onclick="showInfo('summary')">i</span></h2>
       <div class="summary-grid" id="summaryGrid"></div>
     </div>
 
     <div class="dashboard">
 
-      <!-- AI Insight (moved up!) -->
-      <div class="panel full-width" id="aiPanel">
+      <!-- AI Insight -->
+      <div class="panel full-width" id="sectionAI">
         <h2><span class="section-badge"></span> AI Insight (FinGPT) <span class="info-btn" onclick="showInfo('ai')">i</span></h2>
         <div id="aiInsight" class="ai-box unavailable">Start the Colab notebook to enable AI insights.</div>
       </div>
 
       <!-- Holdings Detail -->
-      <div class="panel full-width">
+      <div class="panel full-width" id="sectionHoldings">
         <div class="header-row">
           <h2><span class="section-badge"></span> Holdings Detail <span class="info-btn" onclick="showInfo('holdings')">i</span></h2>
           <div style="display:flex;gap:6px">
@@ -299,14 +371,14 @@
       </div>
 
       <!-- Candlestick Charts -->
-      <div class="panel full-width" id="candlePanel" style="display:none">
+      <div class="panel full-width" id="candlePanel" data-section="sectionCharts" style="display:none">
         <h2><span class="section-badge"></span> Price Charts <span class="info-btn" onclick="showInfo('candle')">i</span></h2>
         <div class="candle-tabs" id="candleTabs"></div>
         <div id="candleChart" class="plotly-chart"></div>
       </div>
 
       <!-- Monte Carlo -->
-      <div class="panel full-width" id="monteCarloPanel" style="display:none">
+      <div class="panel full-width" id="monteCarloPanel" data-section="sectionRisk" style="display:none">
         <h2><span class="section-badge"></span> Risk Analysis — Monte Carlo VaR <span class="info-btn" onclick="showInfo('montecarlo')">i</span></h2>
         <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">10,000 simulated 30 day portfolio paths drawn from a fitted Student t distribution with full covariance via Cholesky decomposition.</p>
         <div class="risk-grid" id="varCards"></div>
@@ -323,7 +395,7 @@
       </div>
 
       <!-- Efficient Frontier -->
-      <div class="panel" id="frontierPanel" style="display:none">
+      <div class="panel" id="frontierPanel" data-section="sectionFrontier" style="display:none">
         <h2><span class="section-badge"></span> Efficient Frontier <span class="info-btn" onclick="showInfo('frontier')">i</span></h2>
         <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Markowitz mean variance optimisation with Ledoit Wolf shrinkage and Black Litterman priors. Box constraints between 5 and 60 percent per name.</p>
         <div id="frontierChart" class="plotly-chart"></div>
@@ -331,14 +403,14 @@
       </div>
 
       <!-- Correlation -->
-      <div class="panel" id="corrPanel" style="display:none">
+      <div class="panel" id="corrPanel" data-section="sectionCorrelation" style="display:none">
         <h2><span class="section-badge"></span> Correlation Matrix <span class="info-btn" onclick="showInfo('correlation')">i</span></h2>
         <p style="font-size:0.72rem;color:var(--muted);margin-bottom:4px" id="corrInterpretation"></p>
         <div id="corrHeatmap" class="plotly-chart"></div>
       </div>
 
       <!-- Stress Testing -->
-      <div class="panel full-width" id="stressPanel" style="display:none">
+      <div class="panel full-width" id="stressPanel" data-section="sectionStress" style="display:none">
         <h2><span class="section-badge"></span> Stress Testing <span class="info-btn" onclick="showInfo('stress')">i</span></h2>
         <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Beta adjusted estimated losses under historical market crises, using the canonical 252 day OLS beta against SPY.</p>
         <div id="stressResults"></div>
@@ -346,28 +418,28 @@
       </div>
 
       <!-- Factor Attribution -->
-      <div class="panel full-width" id="factorPanel" style="display:none">
+      <div class="panel full-width" id="factorPanel" data-section="sectionFactor" style="display:none">
         <h2><span class="section-badge"></span> Factor Attribution <span class="info-btn" onclick="showInfo('factor')">i</span></h2>
         <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Single factor CAPM decomposition of portfolio return into market beta component and alpha (idiosyncratic skill).</p>
         <div id="factorAttribution"></div>
       </div>
 
       <!-- Tariff Exposure -->
-      <div class="panel" id="tariffPanel" style="display:none">
+      <div class="panel" id="tariffPanel" data-section="sectionTariff" style="display:none">
         <h2><span class="section-badge"></span> Tariff Exposure <span class="info-btn" onclick="showInfo('tariff')">i</span></h2>
         <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Estimated portfolio drag from a tariff shock on AAPL China cost of goods sold, under a constant P over E translation.</p>
         <div id="tariffBox"></div>
       </div>
 
       <!-- Tax Liability -->
-      <div class="panel" id="taxPanel" style="display:none">
+      <div class="panel" id="taxPanel" data-section="sectionTax" style="display:none">
         <h2><span class="section-badge"></span> Tax Liability <span class="info-btn" onclick="showInfo('tax')">i</span></h2>
         <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Estimated long term capital gains tax on each position, plus harvestable losses, at the top marginal rate of 23.8 percent (20 percent federal plus 3.8 percent NIIT).</p>
         <div id="taxBox"></div>
       </div>
 
       <!-- Options -->
-      <div class="panel full-width" id="optionsPanel" style="display:none">
+      <div class="panel full-width" id="optionsPanel" data-section="sectionOptions" style="display:none">
         <div class="header-row">
           <h2><span class="section-badge"></span> Options Chain with Greeks <span class="info-btn" onclick="showInfo('options')">i</span></h2>
           <div style="display:flex;gap:8px;align-items:center">
@@ -383,19 +455,19 @@
       </div>
 
       <!-- Allocation -->
-      <div class="panel">
+      <div class="panel" id="sectionAllocation">
         <h2><span class="section-badge"></span> Allocation <span class="info-btn" onclick="showInfo('allocation')">i</span></h2>
         <div class="chart-container"><canvas id="allocationChart"></canvas></div>
       </div>
 
       <!-- Macro -->
-      <div class="panel">
+      <div class="panel" id="sectionMacro">
         <h2><span class="section-badge"></span> Macro Environment <span class="info-btn" onclick="showInfo('macro')">i</span></h2>
         <div id="macroContainer"></div>
       </div>
 
       <!-- News -->
-      <div class="panel full-width">
+      <div class="panel full-width" id="sectionNews">
         <h2><span class="section-badge"></span> News &amp; Sentiment <span class="info-btn" onclick="showInfo('news')">i</span></h2>
         <div id="sentimentLegend" class="sentiment-legend" style="display:none">
           <span class="sentiment-badge sentiment-positive">positive</span> Bullish
@@ -405,6 +477,54 @@
         </div>
         <div id="newsContainer"></div>
       </div>
+
+      <!-- Legendary Investors -->
+      <div class="panel full-width" id="holdersPanel" data-section="sectionHolders">
+        <h2><span class="section-badge"></span> Legendary Investors <span class="info-btn" onclick="showInfo('holders')">i</span></h2>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Which of the world's top investors hold the same stocks as you, based on the latest SEC 13F filings. Search any ticker below.</p>
+        <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
+          <div><label style="font-size:0.72rem;color:var(--muted);display:block;margin-bottom:2px">Add ticker</label><input id="holdersSearch" placeholder="e.g. NVDA, AMZN" style="width:180px" onkeydown="if(event.key==='Enter')addHolderTicker()"></div>
+          <button class="btn-primary" onclick="addHolderTicker()" style="height:36px">Look Up</button>
+          <div id="holdersTags" style="display:flex;gap:4px;flex-wrap:wrap;align-items:center"></div>
+        </div>
+        <div id="holdersResults"><p style="color:var(--muted)">Analyze your portfolio or search a ticker above to see institutional holders.</p></div>
+      </div>
+
+      <!-- What-If Trade Simulator -->
+      <div class="panel full-width" id="whatifPanel" data-section="sectionWhatIf">
+        <h2><span class="section-badge"></span> What-If Trade Simulator <span class="info-btn" onclick="showInfo('whatif')">i</span></h2>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Simulate adding or removing a position and see how key portfolio metrics would change before you trade.</p>
+        <div class="whatif-form" id="whatifForm">
+          <div><label>Symbol</label><input id="whatifSymbol" placeholder="NVDA" style="width:90px"></div>
+          <div><label>Shares</label><input id="whatifShares" type="number" value="10" min="1" style="width:80px"></div>
+          <div><label>Action</label><select id="whatifAction"><option value="buy">Buy</option><option value="sell">Sell</option></select></div>
+          <div><button class="btn-primary" onclick="runWhatIf()" style="margin-top:18px">Simulate</button></div>
+        </div>
+        <div id="whatifResults"></div>
+      </div>
+
+      <!-- Regime-Aware Risk Engine -->
+      <div class="panel full-width" id="regimePanel" data-section="sectionRegime" style="display:none">
+        <h2><span class="section-badge"></span> Regime Aware Risk Engine <span class="info-btn" onclick="showInfo('regime')">i</span></h2>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Rolling 21 day realised volatility classifies the market regime and adjusts VaR estimates accordingly.</p>
+        <div id="regimeResults"></div>
+        <div id="regimeChart" class="plotly-chart" style="margin-top:12px"></div>
+      </div>
+
+      <!-- Event-Risk Calendar -->
+      <div class="panel full-width" id="eventsPanel" data-section="sectionEvents" style="display:none">
+        <h2><span class="section-badge"></span> Event Risk Calendar <span class="info-btn" onclick="showInfo('events')">i</span></h2>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Upcoming earnings dates with historical earnings day return distributions and event VaR.</p>
+        <div id="eventsResults"></div>
+      </div>
+
+      <!-- Data Quality Dashboard -->
+      <div class="panel full-width" id="qualityPanel" data-section="sectionQuality" style="display:none">
+        <h2><span class="section-badge"></span> Data Quality Dashboard <span class="info-btn" onclick="showInfo('quality')">i</span></h2>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Per ticker data completeness, freshness, zero volume days, and gap detection.</p>
+        <div id="qualityResults"></div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -528,6 +648,41 @@ const INFO = {
     why: 'Headline deduplication matters more than it sounds. Without it, Reuters syndicated stories show up three or four times each and crowd out other news. The URL hash approach is robust to tracking parameters like utm_source that would otherwise break naive text matching.',
     tags: ['URL Fingerprint', 'SHA1 Dedup', 'FinGPT Sentiment', 'Yahoo Finance'],
   },
+  holders: {
+    title: 'Legendary Investors',
+    what: 'Cross references your portfolio stocks against SEC 13F filings to show which legendary investors and top hedge funds hold the same names as you.',
+    method: '<b>Data source</b><br>Yahoo Finance institutional holders and mutual fund holders, which aggregate 13F filings. SEC requires institutional managers with over 100 million dollars in qualifying assets to file quarterly.<br><br><b>Matching</b><br>A curated dictionary of 25 plus legendary investors (Buffett, Dalio, Simons, Griffin, Soros, Ackman, Druckenmiller, and others) is matched against holder names. If a holder name contains a known fund substring, the position is flagged with the investor name, fund, and investing style.<br><br><b>Limitations</b><br>13F filings are delayed (filed 45 days after quarter end). They only show long equity positions (no shorts, no options, no bonds). The investor may have already exited by the time the filing is public.',
+    why: 'Knowing that Warren Buffett holds the same stock as you does not make it a good trade, but it is a useful signal. Smart money positioning, especially concentrated positions, can confirm or challenge your own thesis. The investing style tag helps you understand whether the overlap is coincidental or philosophically aligned with your own approach.',
+    tags: ['13F Filing', 'Institutional Holders', 'Smart Money', 'SEC', 'Buffett', 'Hedge Funds'],
+  },
+  whatif: {
+    title: 'What-If Trade Simulator',
+    what: 'Simulate adding or removing a position and instantly see how the trade would change your portfolio risk and return metrics before you execute.',
+    method: '<b>Process</b><br>The simulator takes your current portfolio, applies the hypothetical trade (buy or sell N shares of a ticker), then recomputes the full metric stack on the modified portfolio.<br><br><b>Metrics compared</b><br>Sharpe ratio, annualised volatility, portfolio beta vs SPY, HHI concentration, effective N, and parametric 30 day VaR at 95 percent.<br><br><b>Delta</b><br>Each metric shows before, after, and the signed change. Green delta means improvement, red means degradation.',
+    why: 'Every trade changes the portfolio risk profile. This simulator lets you preview the impact before committing capital. Adding a high beta name to a low vol portfolio might boost expected return but also spike your VaR.',
+    tags: ['What If', 'Trade Simulation', 'Metric Delta', 'Position Sizing'],
+  },
+  regime: {
+    title: 'Regime Aware Risk Engine',
+    what: 'Classifies the current market volatility regime using rolling realised volatility and adjusts VaR estimates to reflect the regime you are actually in, not an unconditional average.',
+    method: '<b>Rolling vol</b><br>21 day rolling standard deviation of portfolio daily log returns, annualised (times sqrt 252). This is the standard institutional window for short horizon vol.<br><br><b>Regime buckets</b><br>Low (below 12 percent), Normal (12 to 20 percent), Elevated (20 to 30 percent), Crisis (above 30 percent).<br><br><b>Regime conditional VaR</b><br>Instead of using the full return distribution, only the returns observed during the current regime class are used to estimate VaR. In a crisis regime this produces a much larger (worse) VaR than the unconditional estimate.<br><br><b>Transitions</b><br>Shows the empirical probability of moving from one regime to another.',
+    why: 'Unconditional VaR is an average across calm and turbulent periods. If you are currently in a crisis regime, the unconditional number understates your real risk. Regime conditioning fixes this and gives a risk number that reflects right now.',
+    tags: ['Regime Detection', 'Rolling Volatility', 'Conditional VaR', 'Crisis Detection'],
+  },
+  events: {
+    title: 'Event Risk Calendar',
+    what: 'Shows upcoming earnings dates for each stock holding, together with historical earnings day return distributions and an event day VaR estimate.',
+    method: '<b>Earnings dates</b><br>Pulled from Yahoo Finance calendar data. Shows the next scheduled earnings announcement per ticker.<br><br><b>Historical returns</b><br>For each past earnings date in the last year, computes the one day return (close to close) on the announcement day.<br><br><b>Average and std</b><br>Mean and standard deviation of historical earnings day returns. A high std means the stock moves a lot on earnings, regardless of direction.<br><br><b>Event VaR</b><br>Approximate worst case earnings day move at the 5th percentile of historical earnings returns.',
+    why: 'Earnings announcements are the single largest source of overnight gap risk for individual stocks. Knowing when they are coming and how the stock has historically reacted lets you size positions and hedge appropriately.',
+    tags: ['Earnings Calendar', 'Event Risk', 'Gap Risk', 'Historical Returns'],
+  },
+  quality: {
+    title: 'Data Quality Dashboard',
+    what: 'Per ticker assessment of the price data feeding into every calculation on this dashboard. Reports completeness, freshness, zero volume days, data gaps, and an overall quality score.',
+    method: '<b>Expected bars</b><br>Business days (weekdays) between the oldest and newest data point for stocks, calendar days for crypto.<br><br><b>Missing percent</b><br>(1 minus actual over expected) times 100.<br><br><b>Zero volume</b><br>Days where reported volume is exactly zero, which often indicates a data feed issue or exchange holiday not filtered out.<br><br><b>Gaps</b><br>Consecutive calendar day gaps exceeding 4 days (stocks) or 2 days (crypto) that are not explained by weekends.<br><br><b>Quality score</b><br>Composite 0 to 100 score: 40 points for completeness, 30 for freshness (decays over 30 days), 15 for volume quality, 15 for gap free data.',
+    why: 'Garbage in, garbage out. If the price data has holes, stale bars, or zero volume days, every metric downstream (volatility, beta, VaR, Sharpe) is contaminated. This panel lets you catch data issues before they become analysis errors.',
+    tags: ['Data Quality', 'Completeness', 'Freshness', 'Gap Detection', 'Quality Score'],
+  },
 };
 
 function showInfo(key) {
@@ -554,6 +709,66 @@ function showInfo(key) {
   document.getElementById('infoOverlay').classList.add('active');
 }
 function closeInfo() { document.getElementById('infoOverlay').classList.remove('active'); }
+
+// ── Navigation Bar ────────────────────────────────
+const NAV_SECTIONS = [
+  { id: 'sectionSummary', label: 'Summary' },
+  { id: 'sectionAI', label: 'AI Insight' },
+  { id: 'sectionHoldings', label: 'Holdings' },
+  { id: 'candlePanel', label: 'Charts' },
+  { id: 'monteCarloPanel', label: 'VaR' },
+  { id: 'frontierPanel', label: 'Frontier' },
+  { id: 'corrPanel', label: 'Correlation' },
+  { id: 'stressPanel', label: 'Stress' },
+  { id: 'factorPanel', label: 'Factor' },
+  { id: 'tariffPanel', label: 'Tariff' },
+  { id: 'taxPanel', label: 'Tax' },
+  { id: 'optionsPanel', label: 'Options' },
+  { id: 'sectionAllocation', label: 'Allocation' },
+  { id: 'sectionMacro', label: 'Macro' },
+  { id: 'sectionNews', label: 'News' },
+  { id: 'holdersPanel', label: 'Investors' },
+  { id: 'whatifPanel', label: 'What If' },
+  { id: 'regimePanel', label: 'Regime' },
+  { id: 'eventsPanel', label: 'Events' },
+  { id: 'qualityPanel', label: 'Quality' },
+];
+
+function buildNavBar() {
+  const container = document.getElementById('navLinks');
+  container.innerHTML = NAV_SECTIONS.map(s =>
+    `<a class="nav-link" data-target="${s.id}" onclick="scrollToSection('${s.id}')">${s.label}</a>`
+  ).join('');
+}
+
+function scrollToSection(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const navH = document.querySelector('.nav-bar')?.offsetHeight || 44;
+  const top = el.getBoundingClientRect().top + window.scrollY - navH - 8;
+  window.scrollTo({ top, behavior: 'smooth' });
+}
+
+// Highlight active nav link on scroll
+let _navTicking = false;
+window.addEventListener('scroll', () => {
+  if (_navTicking) return;
+  _navTicking = true;
+  requestAnimationFrame(() => {
+    const navH = document.querySelector('.nav-bar')?.offsetHeight || 44;
+    const links = document.querySelectorAll('.nav-link');
+    let activeId = null;
+    for (const s of NAV_SECTIONS) {
+      const el = document.getElementById(s.id);
+      if (el && el.style.display !== 'none') {
+        const rect = el.getBoundingClientRect();
+        if (rect.top <= navH + 60) activeId = s.id;
+      }
+    }
+    links.forEach(l => l.classList.toggle('active', l.dataset.target === activeId));
+    _navTicking = false;
+  });
+});
 
 // ── Plotly Theme ──────────────────────────────────
 const PLOTLY_LAYOUT = {
@@ -836,6 +1051,16 @@ function renderResults(data) {
       return `<div class="news-item"><div class="news-title">${th} ${badge}</div><div class="news-meta">${a.source} &middot; ${a.published?.slice(0, 10) || ''}</div></div>`;
     }).join('');
   } else { ne.innerHTML = '<p style="color:var(--muted)">No news available</p>'; }
+
+  // New features — async fetches in parallel (non-blocking)
+  const allSymbols = analytics.holdings.filter(h => !h.error).map(h => h.symbol);
+  fetchAndRenderHolders(allSymbols);
+  fetchAndRenderRegime();
+  fetchAndRenderEvents(allSymbols);
+  fetchAndRenderQuality();
+
+  // Build navigation bar
+  buildNavBar();
 }
 
 // ── Factor Attribution (CAPM decomposition) ────────────────
@@ -941,8 +1166,8 @@ function renderTaxPanel(analytics) {
             <td></td>
             <td class="negative">$${fmt(totalOwed)}</td>
             <td class="positive">$${fmt(totalBenefit)}</td>
-            <td class="positive">$${fmt(totalAfterTax)}</td>
-            <td></td>
+            <td class="${totalAfterTax + totalBenefit >= 0 ? 'positive' : 'negative'}">$${fmt(totalAfterTax + totalBenefit)}</td>
+            <td style="font-size:0.72rem;color:var(--muted)">net of tax and harvesting</td>
           </tr>
         </tfoot>
       </table>
@@ -950,6 +1175,363 @@ function renderTaxPanel(analytics) {
     <div style="margin-top:10px;font-size:0.78rem;color:var(--muted);line-height:1.6">
       Rate is 23.8 percent: 20 percent federal long term capital gains plus 3.8 percent net investment income tax. All positions assumed held longer than one year because the backend has no purchase date.
     </div>`;
+}
+
+// ── Legendary Investors ───────────────────────────────────
+let _holdersTickers = [];  // current set of tickers being displayed
+let _holdersData = {};     // cached holder data across lookups
+
+async function fetchAndRenderHolders(symbols) {
+  const stockSyms = symbols.filter(s => !s.includes('-USD'));
+  _holdersTickers = [...stockSyms];
+  _renderHoldersTags();
+  if (!stockSyms.length) {
+    document.getElementById('holdersResults').innerHTML = '<p style="color:var(--muted)">No stock tickers in portfolio (crypto does not have 13F filings).</p>';
+    return;
+  }
+  await _fetchHolders(stockSyms);
+}
+
+async function _fetchHolders(tickers) {
+  const box = document.getElementById('holdersResults');
+  box.innerHTML = '<div class="loader">Loading institutional holders</div>';
+  try {
+    const r = await fetch(`/api/holders?tickers=${tickers.join(',')}`);
+    if (!r.ok) { box.innerHTML = '<p style="color:var(--red)">Failed to load holders data.</p>'; return; }
+    const d = await r.json();
+    // Merge into cache
+    Object.assign(_holdersData, d);
+    // Build display data from all cached tickers that are in our current list
+    const display = {};
+    for (const t of _holdersTickers) {
+      if (_holdersData[t]) display[t] = _holdersData[t];
+    }
+    if (!Object.keys(display).length) {
+      box.innerHTML = '<p style="color:var(--muted)">No institutional holder data found.</p>';
+      return;
+    }
+    renderHoldersPanel(display);
+  } catch { box.innerHTML = '<p style="color:var(--red)">Error fetching holders.</p>'; }
+}
+
+function addHolderTicker() {
+  const input = document.getElementById('holdersSearch');
+  const raw = input.value.trim().toUpperCase();
+  if (!raw) return;
+  const newTickers = raw.split(/[,\s]+/).filter(t => t && !t.includes('-USD'));
+  if (!newTickers.length) { input.value = ''; return; }
+  const toFetch = newTickers.filter(t => !_holdersTickers.includes(t));
+  _holdersTickers = [...new Set([..._holdersTickers, ...newTickers])];
+  _renderHoldersTags();
+  input.value = '';
+  if (toFetch.length) {
+    _fetchHolders(toFetch);
+  } else {
+    // All already cached, just re-render
+    const display = {};
+    for (const t of _holdersTickers) {
+      if (_holdersData[t]) display[t] = _holdersData[t];
+    }
+    renderHoldersPanel(display);
+  }
+}
+
+function removeHolderTicker(sym) {
+  _holdersTickers = _holdersTickers.filter(t => t !== sym);
+  _renderHoldersTags();
+  const display = {};
+  for (const t of _holdersTickers) {
+    if (_holdersData[t]) display[t] = _holdersData[t];
+  }
+  if (Object.keys(display).length) {
+    renderHoldersPanel(display);
+  } else {
+    document.getElementById('holdersResults').innerHTML = '<p style="color:var(--muted)">Search a ticker above to see institutional holders.</p>';
+  }
+}
+
+function _renderHoldersTags() {
+  const el = document.getElementById('holdersTags');
+  el.innerHTML = _holdersTickers.map(t =>
+    `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:0.75rem;font-weight:600">
+      ${t} <span onclick="removeHolderTicker('${t}')" style="cursor:pointer;color:var(--red);font-size:0.68rem;margin-left:2px">x</span>
+    </span>`
+  ).join('');
+}
+
+function renderHoldersPanel(data) {
+  const box = document.getElementById('holdersResults');
+  let html = '';
+
+  // Legendary matches grouped by investor
+  const legendaryMap = {};
+  for (const [sym, info] of Object.entries(data)) {
+    for (const leg of (info.legendary || [])) {
+      const key = leg.investor_name;
+      if (!legendaryMap[key]) legendaryMap[key] = { ...leg, stocks: [] };
+      legendaryMap[key].stocks.push({
+        symbol: sym,
+        shares: leg.shares,
+        pct_held: leg.pct_held,
+        value: leg.value,
+        date_reported: leg.date_reported,
+      });
+    }
+  }
+
+  if (Object.keys(legendaryMap).length) {
+    html += '<h3 style="margin-bottom:10px;color:var(--accent2)">Legendary investors in your stocks</h3>';
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;margin-bottom:20px">';
+    for (const [name, inv] of Object.entries(legendaryMap)) {
+      const stockLines = inv.stocks.map(s =>
+        `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(35,38,64,0.3)">
+          <strong>${s.symbol}</strong>
+          <span>${s.shares ? Number(s.shares).toLocaleString() + ' shares' : ''} ${s.pct_held ? '(' + s.pct_held + '%)' : ''}</span>
+          <span style="color:var(--muted);font-size:0.72rem">${s.value ? '$' + Number(s.value).toLocaleString() : ''}</span>
+        </div>`
+      ).join('');
+      html += `<div class="investor-card">
+        <div class="inv-name">${name}</div>
+        <div class="inv-fund">${inv.fund_name}</div>
+        <div class="inv-style">${inv.style}</div>
+        <div class="inv-detail">${stockLines}</div>
+      </div>`;
+    }
+    html += '</div>';
+  } else {
+    html += '<p style="color:var(--muted);margin-bottom:16px">No legendary investor matches found in your portfolio stocks. This does not mean top funds do not hold them, only that none of the 25 tracked legends appear in the current 13F data.</p>';
+  }
+
+  // Top institutional holders table per symbol
+  html += '<h3 style="margin-bottom:8px">Top Institutional Holders</h3>';
+  for (const [sym, info] of Object.entries(data)) {
+    if (!info.top_holders || !info.top_holders.length) continue;
+    html += `<details style="margin-bottom:10px"><summary style="cursor:pointer;font-weight:600;font-size:0.85rem;padding:6px 0">${sym} <span style="color:var(--muted);font-weight:400">(${info.total_institutional_holders} institutions)</span></summary>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Holder</th><th>Shares</th><th>% Out</th><th>Value</th><th>Reported</th></tr></thead>
+        <tbody>${info.top_holders.map(h => `<tr>
+          <td>${h.holder}</td>
+          <td>${h.shares ? Number(h.shares).toLocaleString() : '-'}</td>
+          <td>${h.pct_held}%</td>
+          <td>${h.value ? '$' + Number(h.value).toLocaleString() : '-'}</td>
+          <td style="color:var(--muted)">${h.date_reported}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </details>`;
+  }
+  box.innerHTML = html;
+}
+
+// ── What-If Trade Simulator ───────────────────────────────
+async function runWhatIf() {
+  const sym = document.getElementById('whatifSymbol').value.trim().toUpperCase();
+  const shares = parseFloat(document.getElementById('whatifShares').value) || 0;
+  const action = document.getElementById('whatifAction').value;
+  const box = document.getElementById('whatifResults');
+  if (!sym || shares <= 0) { box.innerHTML = '<p style="color:var(--red)">Enter a valid symbol and share count.</p>'; return; }
+
+  const valid = holdings.filter(h => h.symbol && h.symbol.trim() && h.shares > 0);
+  if (!valid.length) { box.innerHTML = '<p style="color:var(--red)">Analyze a portfolio first.</p>'; return; }
+
+  box.innerHTML = '<div class="loader">Simulating trade</div>';
+  try {
+    const r = await fetch('/api/whatif', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holdings: valid, trade_symbol: sym, trade_shares: shares, trade_action: action }),
+    });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Simulation failed'); }
+    const d = await r.json();
+    const b = d.before, a = d.after, dl = d.delta;
+    const metrics = [
+      { key: 'sharpe', label: 'Sharpe', dp: 4 },
+      { key: 'volatility', label: 'Volatility', dp: 2, pct: true },
+      { key: 'beta', label: 'Beta', dp: 4 },
+      { key: 'hhi', label: 'HHI', dp: 4 },
+      { key: 'effective_n', label: 'Effective N', dp: 2 },
+      { key: 'var_95_pct', label: 'VaR 95%', dp: 2, pct: true },
+    ];
+    const signCls = v => v > 0.001 ? 'positive' : v < -0.001 ? 'negative' : '';
+    // For vol, hhi, var: decrease is good (green). For sharpe, eff_n: increase is good.
+    const improveCls = (key, delta) => {
+      const goodUp = ['sharpe', 'effective_n'];
+      const goodDown = ['volatility', 'hhi', 'var_95_pct', 'beta'];
+      if (goodUp.includes(key)) return delta > 0.001 ? 'positive' : delta < -0.001 ? 'negative' : '';
+      if (goodDown.includes(key)) return delta < -0.001 ? 'positive' : delta > 0.001 ? 'negative' : '';
+      return '';
+    };
+    box.innerHTML = `
+      <div style="margin-bottom:12px;font-size:0.85rem"><strong>${action === 'buy' ? 'Buy' : 'Sell'} ${shares} ${sym}</strong>
+        <span style="color:var(--muted)"> | Portfolio value: $${fmt(b.total_value)} → $${fmt(a.total_value)}</span></div>
+      <div class="delta-grid">${metrics.map(m => {
+        const bv = b[m.key], av = a[m.key], dv = dl[m.key];
+        const fmtV = v => m.pct ? (v * 100).toFixed(m.dp) + '%' : v.toFixed(m.dp);
+        return `<div class="delta-card">
+          <div class="d-label">${m.label}</div>
+          <div class="d-before">${fmtV(bv)}</div>
+          <div class="d-after">${fmtV(av)}</div>
+          <div class="d-delta ${improveCls(m.key, dv)}">${dv >= 0 ? '+' : ''}${m.pct ? (dv * 100).toFixed(m.dp) + '%' : dv.toFixed(m.dp)}</div>
+        </div>`;
+      }).join('')}</div>`;
+  } catch (e) { box.innerHTML = `<p style="color:var(--red)">Error: ${e.message}</p>`; }
+}
+
+// ── Regime-Aware Risk Engine ──────────────────────────────
+async function fetchAndRenderRegime() {
+  const valid = holdings.filter(h => h.symbol && h.symbol.trim() && h.shares > 0);
+  if (!valid.length) return;
+  const p = document.getElementById('regimePanel');
+  try {
+    const r = await fetch('/api/regime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holdings: valid }),
+    });
+    if (!r.ok) { p.style.display = 'none'; return; }
+    const d = await r.json();
+    if (d.error) { p.style.display = 'none'; return; }
+    p.style.display = 'block';
+    renderRegime(d);
+  } catch { p.style.display = 'none'; }
+}
+
+function renderRegime(d) {
+  const regCls = { low: 'regime-low', normal: 'regime-normal', elevated: 'regime-elevated', crisis: 'regime-crisis' };
+  const box = document.getElementById('regimeResults');
+  const pcts = d.regime_pct || {};
+  box.innerHTML = `
+    <div class="risk-grid">
+      <div class="risk-card"><div class="risk-label">Current Regime</div>
+        <div class="risk-value"><span class="regime-badge ${regCls[d.current_regime] || ''}">${d.current_regime}</span></div>
+        <div class="risk-sub">${d.current_vol_pct}% annualised vol (${d.window_days}d rolling)</div></div>
+      <div class="risk-card danger"><div class="risk-label">Regime VaR 95%</div>
+        <div class="risk-value negative">${d.var_95_regime_conditional}%</div>
+        <div class="risk-sub">30 day, conditional on ${d.current_regime} regime</div></div>
+      <div class="risk-card warning"><div class="risk-label">Unconditional VaR 95%</div>
+        <div class="risk-value negative">${d.var_95_unconditional}%</div>
+        <div class="risk-sub">30 day, all regimes averaged</div></div>
+      <div class="risk-card"><div class="risk-label">Regime Vol</div>
+        <div class="risk-value">${d.regime_vol_annualized}%</div>
+        <div class="risk-sub">annualised, ${d.current_regime} days only</div></div>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap">
+      ${Object.entries(pcts).map(([r, pct]) => `<div style="font-size:0.78rem"><span class="regime-badge ${regCls[r] || ''}" style="font-size:0.7rem;padding:2px 8px">${r}</span> ${pct}% of history</div>`).join('')}
+    </div>`;
+
+  // Rolling vol chart
+  if (d.rolling_vol && d.rolling_vol.length > 5) {
+    const colors = d.rolling_vol.map(v => v >= 30 ? '#f87171' : v >= 20 ? '#fbbf24' : v >= 12 ? '#818cf8' : '#34d399');
+    Plotly.newPlot('regimeChart', [{
+      x: d.rolling_dates, y: d.rolling_vol, type: 'bar',
+      marker: { color: colors }, hovertemplate: '%{x}<br>Vol: %{y}%<extra></extra>',
+    }], {
+      ...PLOTLY_LAYOUT,
+      xaxis: { ...PLOTLY_LAYOUT.xaxis, title: '' },
+      yaxis: { ...PLOTLY_LAYOUT.yaxis, title: 'Annualised Vol (%)' },
+      shapes: [
+        { type: 'line', x0: 0, x1: 1, xref: 'paper', y0: 20, y1: 20, line: { color: '#fbbf24', width: 1, dash: 'dash' } },
+        { type: 'line', x0: 0, x1: 1, xref: 'paper', y0: 30, y1: 30, line: { color: '#f87171', width: 1, dash: 'dash' } },
+      ],
+      margin: { ...PLOTLY_LAYOUT.margin, t: 10 },
+    }, PLOTLY_CONFIG);
+  }
+}
+
+// ── Event-Risk Calendar ───────────────────────────────────
+async function fetchAndRenderEvents(symbols) {
+  const stockSyms = symbols.filter(s => !s.includes('-USD'));
+  const p = document.getElementById('eventsPanel');
+  if (!stockSyms.length) { p.style.display = 'none'; return; }
+  try {
+    const r = await fetch(`/api/earnings?tickers=${stockSyms.join(',')}`);
+    if (!r.ok) { p.style.display = 'none'; return; }
+    const events = await r.json();
+    if (!events || !events.length) { p.style.display = 'none'; return; }
+    p.style.display = 'block';
+    renderEvents(events);
+  } catch { p.style.display = 'none'; }
+}
+
+function renderEvents(events) {
+  const box = document.getElementById('eventsResults');
+  const rows = events.map(e => {
+    const rets = e.historical_earnings_returns || [];
+    const retBars = rets.map(r =>
+      `<span style="display:inline-block;padding:2px 6px;margin:1px;border-radius:3px;font-size:0.72rem;background:${r >= 0 ? 'rgba(52,211,153,0.12)' : 'rgba(248,113,113,0.12)'};color:${r >= 0 ? 'var(--green)' : 'var(--red)'}">${r >= 0 ? '+' : ''}${r}%</span>`
+    ).join('');
+    const avgCls = e.avg_earnings_day_return != null ? (e.avg_earnings_day_return >= 0 ? 'positive' : 'negative') : '';
+    return `<tr>
+      <td><strong>${e.symbol}</strong></td>
+      <td>${e.next_earnings || '<span style="color:var(--muted)">unknown</span>'}</td>
+      <td class="${avgCls}">${e.avg_earnings_day_return != null ? (e.avg_earnings_day_return >= 0 ? '+' : '') + e.avg_earnings_day_return + '%' : 'N/A'}</td>
+      <td>${e.std_earnings_day_return != null ? e.std_earnings_day_return + '%' : 'N/A'}</td>
+      <td>${e.n_events}</td>
+      <td style="max-width:300px;white-space:normal">${retBars || '<span style="color:var(--muted)">no history</span>'}</td>
+    </tr>`;
+  }).join('');
+  box.innerHTML = `<div style="overflow-x:auto"><table>
+    <thead><tr><th>Symbol</th><th>Next Earnings</th><th>Avg Return</th><th>Std Dev</th><th>Events</th><th>Historical Returns</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+// ── Data Quality Dashboard ────────────────────────────────
+async function fetchAndRenderQuality() {
+  const valid = holdings.filter(h => h.symbol && h.symbol.trim() && h.shares > 0);
+  if (!valid.length) return;
+  const p = document.getElementById('qualityPanel');
+  try {
+    const r = await fetch('/api/data-quality', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holdings: valid }),
+    });
+    if (!r.ok) { p.style.display = 'none'; return; }
+    const d = await r.json();
+    if (!d || !d.tickers) { p.style.display = 'none'; return; }
+    p.style.display = 'block';
+    renderQuality(d);
+  } catch { p.style.display = 'none'; }
+}
+
+function renderQuality(d) {
+  const box = document.getElementById('qualityResults');
+  const scoreCls = s => s >= 80 ? 'quality-good' : s >= 50 ? 'quality-ok' : 'quality-bad';
+  const scoreLabel = s => s >= 80 ? 'Good' : s >= 50 ? 'Fair' : 'Poor';
+
+  const rows = Object.entries(d.tickers).map(([sym, t]) => {
+    if (t.status === 'no_data') {
+      return `<tr><td><strong>${sym}</strong></td><td colspan="6" style="color:var(--red)">No data available</td></tr>`;
+    }
+    const gaps = (t.gaps || []).map(g => `${g.from} to ${g.to} (${g.days}d)`).join(', ');
+    return `<tr>
+      <td><strong>${sym}</strong></td>
+      <td>${t.actual_bars} / ${t.expected_bars}</td>
+      <td>${t.missing_pct}%</td>
+      <td>${t.zero_volume_days}</td>
+      <td>${t.staleness_days != null ? t.staleness_days + 'd' : 'N/A'}</td>
+      <td style="max-width:200px;white-space:normal;font-size:0.72rem">${gaps || '<span style="color:var(--green)">none</span>'}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="quality-bar" style="width:80px"><div class="quality-fill ${scoreCls(t.quality_score)}" style="width:${t.quality_score}%"></div></div>
+          <span style="font-weight:600;font-size:0.82rem">${t.quality_score}</span>
+          <span style="font-size:0.68rem;color:var(--muted)">${scoreLabel(t.quality_score)}</span>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div style="margin-bottom:12px;display:flex;align-items:center;gap:12px">
+      <div style="font-size:0.85rem;font-weight:600">Overall Score</div>
+      <div class="quality-bar" style="width:120px"><div class="quality-fill ${scoreCls(d.overall_score)}" style="width:${d.overall_score}%"></div></div>
+      <span style="font-size:1.1rem;font-weight:700">${d.overall_score}</span>
+      <span style="font-size:0.78rem;color:var(--muted)">${scoreLabel(d.overall_score)} (${d.ticker_count} tickers)</span>
+    </div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Symbol</th><th>Bars (actual/expected)</th><th>Missing</th><th>Zero Vol Days</th><th>Staleness</th><th>Gaps</th><th>Quality Score</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
 }
 
 // ── Candlestick Charts ─────────────────────────────────────

@@ -1,11 +1,124 @@
-# FinGPT Portfolio Analyzer v4
+# FinGPT Portfolio Analyzer
 
-An institutional-grade portfolio analytics platform powered by FinGPT (Llama2-7B + LoRA).
-Combines quantitative finance, Monte Carlo simulation, Markowitz optimization, and
-AI-driven sentiment analysis in a single interactive dashboard.
+An institutional-grade portfolio analytics platform that combines quantitative finance, Monte Carlo simulation, Markowitz optimization, options pricing, and AI-driven sentiment analysis in a single interactive dashboard. Built with a FastAPI backend, vanilla JavaScript frontend, and an optional FinGPT language model running on Google Colab.
 
-**v3 (Core Platform)** — Askar Kassimov
-**v4 (Advanced Analytics + Frontend Redesign)** — Shihan Mahfuz
+**All quantitative analytics work offline with zero API cost.** The AI features (sentiment, insight) are optional and require a free Google Colab GPU.
+
+---
+
+## Contributors
+
+This is a collaborative group project. Both contributors are co-creators.
+
+| Contributor | Contributions |
+|---|---|
+| **Askar Kassimov** | Core platform: FastAPI backend, yfinance/FRED/SEC data pipeline, base portfolio analytics (Sharpe, volatility, max drawdown, diversification), FinGPT Colab integration with ngrok tunneling, and the initial frontend dashboard with allocation charts, news feed, macro indicators, and options chain viewer. |
+| **Shihan Mahfuz** | Institutional-grade analytics rebuild, risk management system, and all features listed in [What was added](#what-was-added-by-shihan-mahfuz) below. |
+
+---
+
+## What was added by Shihan Mahfuz
+
+### Mathematics and Analytics Engine
+
+- **Log returns** replacing simple returns across the entire pipeline, with Bessel-corrected standard deviations (ddof=1)
+- **Full covariance portfolio volatility**: `sigma_p = sqrt(w^T * Sigma * w)` using the complete correlation structure, not the diagonal-only approximation
+- **252-day OLS beta** against SPY as the single canonical beta source used everywhere (holdings, stress tests, factor attribution)
+- **Sortino ratio** using downside deviation only (returns below the minimum acceptable return)
+- **Treynor ratio** (excess return per unit of systematic risk)
+- **Calmar ratio** (annualized return divided by maximum drawdown)
+- **Information ratio** (active return vs SPY divided by tracking error)
+- **Jensen's alpha** via the CAPM formula: `alpha = R_p - (R_f + beta * (R_m - R_f))`
+- **HHI concentration index**, **effective N** (1/HHI), and **diversification ratio** (sum of weighted vols divided by portfolio vol)
+- **Wilder-smoothed RSI-14** with labeled bands (extreme oversold, oversold, neutral, overbought, extreme overbought)
+- **Total return computation** including dividends, with dividend-adjusted cost basis
+- **Tax liability engine** at 23.8% LTCG (20% federal + 3.8% NIIT) with tax loss harvesting identification
+- **AAPL tariff exposure model** using China COGS ($87B), net income ($94B), configurable tariff rate and pass-through, with constant P/E price translation
+- **CAPM factor attribution** decomposing portfolio return into beta contribution and alpha (skill)
+
+### Monte Carlo VaR/CVaR (10,000 simulations)
+
+- **Student-t marginal distribution** fitted per asset via MLE, with the conservative minimum degrees of freedom used across all assets to capture fat tails
+- **Cholesky decomposition** of the full covariance matrix for correlated multi-asset draws
+- **Rescaling** by `sqrt((nu-2)/nu)` so the simulated covariance matches the sample covariance exactly
+- **30-day horizon** with daily compounding of log returns
+- VaR at 95% and 99%, CVaR (expected shortfall), percentile fan chart (5th/25th/50th/75th/95th paths)
+
+### Efficient Frontier Optimization
+
+- **Ledoit-Wolf shrinkage** on the covariance matrix for stability with small samples
+- **Black-Litterman style expected returns**: blends implied equilibrium returns (`Pi = lambda * Sigma * w_market`) with historical means at 50/50 to prevent corner solutions
+- **Box constraints** (5% to 60% per name) to produce investable portfolios
+- Current portfolio position, max Sharpe tangency portfolio, and minimum volatility portfolio plotted together
+
+### Options Chain with Black-Scholes Greeks
+
+- Full Black-Scholes pricing with **delta, gamma, theta, vega, rho** computed from market implied volatility
+- **Put/call ratio** (open interest and volume based) with positioning interpretation
+- **IV skew** (10% OTM put IV minus 10% OTM call IV) with market interpretation
+- Risk-free rate sourced live from the 10-year Treasury via FRED
+
+### Stress Testing
+
+- Beta-adjusted losses under 5 historical crises (2008 GFC, COVID-19, 2022 rate hikes, dot-com bust, 2010 flash crash)
+- **Reverse stress test**: solves for the market drop required to produce a given portfolio loss threshold
+- Per-holding beta breakdown cards
+
+### Regime-Aware Risk Engine
+
+- **21-day rolling realized volatility** classifying the market into four regimes: low (<12%), normal (12-20%), elevated (20-30%), crisis (>30%)
+- **Regime-conditional VaR** using only returns observed during the current regime, producing more accurate risk estimates than unconditional VaR
+- Regime transition probabilities and historical regime distribution
+- Rolling volatility bar chart with threshold lines
+
+### What-If Trade Simulator
+
+- Simulate adding or removing any position before executing a trade
+- Recomputes the full portfolio metric stack on the hypothetical portfolio
+- Shows before/after/delta for Sharpe, volatility, beta, HHI, effective N, and VaR
+- Color-coded deltas indicating whether each metric improves or degrades
+
+### Legendary Investors (SEC 13F)
+
+- Cross-references portfolio stocks against institutional holder data from SEC 13F filings via yfinance
+- Matches against 25+ curated legendary investors: Warren Buffett, Ray Dalio, Jim Simons, Ken Griffin, George Soros, Bill Ackman, Stanley Druckenmiller, Steve Cohen, David Tepper, Seth Klarman, Carl Icahn, Cathie Wood, and more
+- Investor cards showing fund name, investing style, shares held, percentage, and dollar value
+- **Dynamic search**: type any ticker to look up its institutional holders in real time, with removable tags and cached results
+- Expandable top 10 institutional holders table per stock
+
+### Event-Risk Calendar
+
+- Upcoming earnings dates per stock holding from yfinance calendar data
+- Historical earnings-day return distribution (close-to-close on announcement days)
+- Average and standard deviation of earnings-day returns for sizing risk
+
+### Data Quality Dashboard
+
+- Per-ticker quality assessment: expected vs actual bars, missing percentage, zero volume days, staleness
+- **Gap detection**: identifies multi-day gaps in the price series that are not explained by weekends
+- **Composite quality score** (0-100): 40 points for completeness, 30 for freshness, 15 for volume quality, 15 for gap-free data
+- Overall portfolio data quality score
+
+### Frontend
+
+- Complete UI redesign with dark theme, gradient accents, and responsive layout
+- **Sticky navigation bar** with 20 section links and scroll-tracking highlight
+- **Educational info modals** on every panel explaining the methodology, formulas, inputs, and interpretation
+- **14 summary metric cards** (value, price return, total return, volatility, Sharpe, Sortino, Calmar, Treynor, info ratio, beta, alpha, HHI, effective N, diversification ratio)
+- **16-column holdings table** with per-row stale price indicators, RSI labels, and tax cells
+- **CSV/JSON export** with 19 fields including dividends, RSI labels, and tax breakdowns
+- Interactive candlestick charts with SMA-20/SMA-50 overlays per holding
+- Correlation heatmap with average off-diagonal interpretation
+- Warnings banner merging backend warnings with stale price detection
+
+### Infrastructure
+
+- **CPI year-over-year fix**: fetches 16 months from FRED and uses date-matching (within 45-day tolerance) to handle missing observations
+- **Live risk-free rate**: 10-year Treasury (preferred) -> Fed Funds -> 4.35% fallback, used consistently across Sharpe, Sortino, Treynor, Black-Scholes, and CAPM
+- **URL fingerprint deduplication** for news articles (SHA-1 hash of normalized URL, strips tracking parameters)
+- **In-memory TTL cache** with appropriate TTLs (prices 1hr, quotes 5min, news 15min, macro 4hr, holders 1hr)
+- Price freshness metadata with staleness detection and age reporting
+- Crypto symbol normalization (BTC -> BTC-USD) with 365-day annualization
 
 ---
 
@@ -13,309 +126,109 @@ AI-driven sentiment analysis in a single interactive dashboard.
 
 ```
 Google Colab (T4 GPU)                          FRED API
-  Llama2-7B + FinGPT LoRA                     (macro data)
-  4-bit quantized (~3.5 GB VRAM)                   |
-  Exposed via ngrok tunnel                         |
-         |                                         |
-         | HTTP                                    |
-         v                                         v
-  +---------------------------------------------------------+
-  |  FastAPI Backend (Python 3.9+)                          |
-  |                                                         |
-  |  app.py ................ API server, request routing     |
-  |  data_fetcher.py ....... yfinance, FRED, SEC EDGAR      |
-  |  portfolio.py .......... Core analytics engine          |
-  |  advanced_analytics.py . Monte Carlo, Frontier, Stress  |
-  |  cache.py .............. In-memory TTL cache            |
-  |  model_client.py ....... FinGPT Colab bridge            |
-  +---------------------------------------------------------+
+  Llama-2-7B + FinGPT LoRA                    (macro data)
+  4-bit NF4 quantized (~3.5 GB VRAM)               |
+  Exposed via ngrok tunnel                          |
+         |                                          |
+         | HTTP                                     |
+         v                                          v
+  +-----------------------------------------------------------+
+  |  FastAPI Backend (backend/)                               |
+  |                                                           |
+  |  app.py ................. API server, 15 endpoints        |
+  |  portfolio.py ........... Core analytics engine           |
+  |  advanced_analytics.py .. Monte Carlo, Frontier, Stress,  |
+  |                           What-If, Regime, Data Quality   |
+  |  data_fetcher.py ........ yfinance, FRED, SEC EDGAR,      |
+  |                           Earnings, Institutional Holders |
+  |  options_math.py ........ Black-Scholes + Greeks          |
+  |  cache.py ............... In-memory TTL cache             |
+  |  model_client.py ........ FinGPT Colab bridge             |
+  +-----------------------------------------------------------+
          |
-         | Serves HTML + JSON API
+         | Serves HTML + JSON API on port 8000
          v
-  +---------------------------------------------------------+
-  |  Single-Page Dashboard (Vanilla JS)                     |
-  |                                                         |
-  |  Plotly.js .... Candlestick, Monte Carlo, Heatmaps      |
-  |  Chart.js ..... Allocation doughnut                     |
-  |  Info Modals .. Educational explanations per section     |
-  +---------------------------------------------------------+
+  +-----------------------------------------------------------+
+  |  Single-Page Dashboard (frontend/static/index.html)       |
+  |                                                           |
+  |  20 analytics panels with sticky navigation               |
+  |  Plotly.js ... Candlestick, Monte Carlo, Heatmaps,        |
+  |               Frontier, Regime Vol Chart                  |
+  |  Chart.js .... Allocation doughnut                        |
+  |  Info Modals . Educational docs on every section          |
+  +-----------------------------------------------------------+
 ```
 
 ---
 
-## Quantitative Methods and Formulas
+## Quick Start
 
-### Daily Returns
+### 1. Clone and install
 
-Simple percentage returns computed from closing prices (oldest to newest):
-
+```bash
+git clone https://github.com/Shihanmahfuz/fingpt-portfolio.git
+cd fingpt-portfolio
+pip install -r requirements.txt
 ```
-r_t = (P_t - P_{t-1}) / P_{t-1}
+
+### 2. Configure API keys
+
+```bash
+cp config/.env.example config/.env
 ```
 
-Where `P_t` is the closing price on day *t*.
+Open `config/.env` and fill in your FRED API key (free at [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html)). All other keys are only needed for optional features.
+
+### 3. Run
+
+```bash
+python3 backend/app.py
+```
+
+Open **http://localhost:8000** in your browser. Enter your holdings and click "Analyze Portfolio."
+
+> **Note:** Use `python3` on macOS. If port 8000 is busy: `lsof -ti :8000 | xargs kill -9`
+
+### 4. (Optional) Enable AI features
+
+The AI features (FinGPT sentiment per headline, portfolio insight narrative) require a GPU:
+
+1. Open `colab/fingpt_server.ipynb` in [Google Colab](https://colab.research.google.com/)
+2. Runtime -> Change runtime type -> **T4 GPU** -> Save
+3. Add `HF_TOKEN` and `NGROK_AUTH_TOKEN` to Colab Secrets (key icon in sidebar)
+4. Runtime -> Run all. Wait 2-4 minutes for the model to load.
+5. Copy the printed ngrok URL into `config/.env` as `COLAB_MODEL_URL`
+6. Restart the backend. The status indicator turns green when connected.
 
 ---
 
-### Annualized Volatility
-
-Standard deviation of daily returns, scaled to annual:
-
-```
-sigma_annual = sigma_daily * sqrt(T)
-```
-
-Where `T = 252` (trading days) for stocks and `T = 365` for crypto.
-
-**Why it matters:** Volatility measures how much a stock's price fluctuates. Higher volatility means more uncertainty. Annualizing lets you compare assets with different trading frequencies.
-
----
-
-### Sharpe Ratio
-
-Risk-adjusted return relative to a risk-free benchmark:
-
-```
-Sharpe = (mean(r - r_f)) / std(r - r_f) * sqrt(T)
-```
-
-Where `r_f` is the daily risk-free rate derived from the Fed Funds Rate (fetched live from FRED API).
-
-**Interpretation:**
-- `> 1.0` — Good risk-adjusted performance
-- `> 2.0` — Very good
-- `< 0` — Underperforming the risk-free rate (e.g., T-bills)
-
-**Note:** A negative Sharpe (like -1.8) means the portfolio's annualized return is below the risk-free rate. This is mathematically correct and common during market downturns. It does not indicate a bug.
-
----
-
-### Sortino Ratio
-
-Like Sharpe, but only penalizes downside volatility:
-
-```
-Sortino = mean(r - r_f) / std(r_downside) * sqrt(T)
-```
-
-Where `r_downside` includes only the excess returns that are negative.
-
-**Why it matters:** Investors typically only care about downside risk, not upside "risk." The Sortino ratio gives a better picture for asymmetric return distributions.
-
----
-
-### Maximum Drawdown
-
-Largest peak-to-trough decline in the price series:
-
-```
-MaxDD = max_over_t [ (Peak_t - Trough_t) / Peak_t ]
-```
-
-**Why it matters:** Tells you the worst historical loss an investor would have experienced. A 30% max drawdown means at some point, the investment fell 30% from its high.
-
----
-
-### Beta (vs. SPY)
-
-Sensitivity of a stock's returns to market (S&P 500) returns:
-
-```
-Beta = Cov(r_stock, r_market) / Var(r_market)
-```
-
-SPY daily data is fetched automatically as the benchmark.
-
-**Interpretation:**
-- `Beta = 1.0` — Moves with the market
-- `Beta > 1.0` — More volatile than market (amplifies moves)
-- `Beta < 1.0` — Less volatile than market (dampens moves)
-
----
-
-### Jensen's Alpha
-
-Excess return beyond what beta predicts (CAPM-based):
-
-```
-Alpha = (mean(r_stock) - r_f) - Beta * (mean(r_market) - r_f)
-```
-
-Annualized by multiplying the daily alpha by `T`.
-
-**Why it matters:** Positive alpha means the stock outperformed what you'd expect given its risk level. It measures manager skill or stock-specific outperformance.
-
----
-
-### Treynor Ratio
-
-Excess return per unit of systematic (beta) risk:
-
-```
-Treynor = (R_annual - r_f) / Beta
-```
-
-**Why it matters:** While Sharpe uses total risk (volatility), Treynor uses only systematic risk (beta). Useful for evaluating assets within a diversified portfolio.
-
----
-
-### Calmar Ratio
-
-Annualized return divided by maximum drawdown:
-
-```
-Calmar = R_annual / MaxDD
-```
-
-**Why it matters:** Combines profitability with worst-case loss. Higher is better — it means you're earning more per unit of "pain."
-
----
-
-### RSI (Relative Strength Index)
-
-Momentum oscillator measuring speed and change of price movements:
-
-```
-RS = avg_gain_over_14_days / avg_loss_over_14_days
-RSI = 100 - (100 / (1 + RS))
-```
-
-**Interpretation:**
-- `RSI > 70` — Overbought (potential pullback)
-- `RSI < 30` — Oversold (potential bounce)
-- `RSI ~ 50` — Neutral
-
----
-
-### Simple Moving Averages (SMA-20, SMA-50)
-
-Arithmetic mean of closing prices over a rolling window:
-
-```
-SMA_n = (1/n) * sum(P_{t-i} for i in 0..n-1)
-```
-
-**Why it matters:** Short-term SMA (20-day) crossing above long-term SMA (50-day) is a bullish "golden cross" signal. The reverse is a "death cross."
-
----
-
-### Diversification Score
-
-Based on the Herfindahl-Hirschman Index (HHI):
-
-```
-HHI = sum(w_i^2) for each holding weight w_i
-Score = 1 - HHI
-```
-
-**Range:** 0 (single asset) to approaching 1 (perfectly diversified).
-
----
-
-## Advanced Analytics (v4)
-
-### Monte Carlo Value at Risk (VaR / CVaR)
-
-Simulates 10,000 possible 30-day futures using historical return distributions.
-
-**Method:**
-1. Compute mean daily returns and covariance matrix from historical data
-2. Sample daily returns from a multivariate normal distribution: `r ~ N(mu, Sigma)`
-3. Compound daily returns over 30 days: `V_T = V_0 * product(1 + r_t)`
-4. VaR at 95% = 5th percentile of the final return distribution
-5. CVaR (Expected Shortfall) = average of returns below the VaR threshold
-
-```
-VaR_95 = Percentile(simulated_returns, 5)
-CVaR_95 = mean(r | r <= VaR_95)
-```
-
-**Why VaR matters:** "With 95% confidence, your portfolio will not lose more than X% over 30 days."
-**Why CVaR matters:** "If the worst does happen (bottom 5%), on average you'd lose Y%." CVaR captures tail risk better than VaR.
-
-**Visualization:** Histogram of return distribution with VaR lines, plus a percentile fan chart (5th, 25th, 50th, 75th, 95th) showing portfolio value paths over time.
-
----
-
-### Efficient Frontier (Markowitz Mean-Variance Optimization)
-
-Finds the set of portfolios that maximize return for each level of risk.
-
-**Method (using PyPortfolioOpt):**
-1. Estimate expected returns via mean historical return
-2. Estimate risk via sample covariance matrix
-3. Solve the quadratic optimization problem:
-   ```
-   minimize  w' * Sigma * w
-   subject to  w' * mu >= target_return
-                sum(w) = 1,  w >= 0
-   ```
-4. Sweep target returns to generate the frontier curve
-5. Identify special portfolios:
-   - **Max Sharpe** — tangency portfolio (highest Sharpe ratio)
-   - **Min Volatility** — leftmost point on the frontier
-
-**Visualization:** Scatter plot showing the frontier curve, your current portfolio position, the max-Sharpe point, and the min-volatility point. Below it, a comparison of your current allocation weights vs. the optimal weights.
-
----
-
-### Correlation Matrix
-
-Pearson correlation coefficients between all pairs of holdings:
-
-```
-rho_{i,j} = Cov(r_i, r_j) / (sigma_i * sigma_j)
-```
-
-**Range:** -1 (perfect inverse) to +1 (perfect positive).
-
-**Interpretation:** Low average correlation means good diversification — your holdings don't all move together. High correlation means concentrated risk.
-
-**Visualization:** Color-coded heatmap (green = low/negative correlation, red = high correlation).
-
----
-
-### Historical Stress Testing
-
-Estimates portfolio losses under 5 major historical market crises using beta-adjusted returns:
-
-```
-Estimated_Loss_i = Beta_i * Market_Drop
-Portfolio_Loss = sum(w_i * Estimated_Loss_i)
-```
-
-| Scenario | Period | Market Drop |
-|----------|--------|-------------|
-| 2008 Global Financial Crisis | Sept 2008 - Mar 2009 | -38.9% |
-| COVID-19 Crash | Feb - Mar 2020 | -33.7% |
-| 2022 Rate Hike Selloff | Jan - Oct 2022 | -25.2% |
-| Dot-Com Bust | Mar 2000 - Oct 2002 | -49.1% |
-| 2010 Flash Crash | May 6, 2010 | -6.9% |
-
-**Why it matters:** Shows how your current portfolio would have performed in past crises, adjusted for each holding's sensitivity to the market.
-
----
-
-## Technical Indicators (per holding)
-
-| Indicator | Formula | Signal |
-|-----------|---------|--------|
-| SMA-20 | 20-day simple moving average | Short-term trend |
-| SMA-50 | 50-day simple moving average | Medium-term trend |
-| RSI-14 | 14-day relative strength index | Overbought (>70) / Oversold (<30) |
-
-Displayed as overlays on interactive candlestick charts (Plotly.js).
-
----
-
-## Data Sources
-
-| Source | Data | Authentication |
-|--------|------|----------------|
-| **yfinance** | Stock/crypto prices, OHLCV, options chains, news | None (free) |
-| **FRED API** | Fed Funds Rate, CPI, Unemployment, Treasury 10Y, S&P 500 | API key (free) |
-| **SEC EDGAR** | Company filings (10-K, 10-Q) | User-Agent string |
-| **FinGPT (Colab)** | Sentiment analysis, headline classification, insights | HuggingFace token + ngrok |
+## Dashboard Sections
+
+| # | Section | Description |
+|---|---------|-------------|
+| 1 | **Portfolio Input** | Enter holdings: symbol, shares, avg cost, dividends per share |
+| 2 | **Portfolio Summary** | 14 metric cards: value, returns, volatility, Sharpe, Sortino, Calmar, Treynor, info ratio, beta, alpha, HHI, effective N, diversification ratio |
+| 3 | **AI Insight** | Natural language risk assessment from FinGPT (requires Colab) |
+| 4 | **Holdings Detail** | 16-column table with per-stock metrics, RSI labels, tax cells. CSV/JSON export |
+| 5 | **Price Charts** | Interactive candlestick charts with SMA-20 and SMA-50 overlays |
+| 6 | **Monte Carlo VaR** | 10,000 simulated paths, VaR/CVaR at 95% and 99%, return histogram, fan chart |
+| 7 | **Efficient Frontier** | Markowitz optimization with Ledoit-Wolf + Black-Litterman. Current vs optimal weights |
+| 8 | **Correlation Matrix** | Pairwise correlation heatmap with diversification interpretation |
+| 9 | **Stress Testing** | Beta-adjusted losses under 5 crises + reverse stress test |
+| 10 | **Factor Attribution** | CAPM decomposition: beta contribution vs alpha (skill) |
+| 11 | **Tariff Exposure** | AAPL China COGS shock model with constant P/E translation |
+| 12 | **Tax Liability** | Per-position LTCG at 23.8%, harvestable losses, after-tax totals |
+| 13 | **Options Chain** | Black-Scholes Greeks, put/call ratio, IV skew |
+| 14 | **Allocation** | Doughnut chart of portfolio weights |
+| 15 | **Macro Environment** | Live FRED data: Fed Funds, CPI YoY, 10Y Treasury, unemployment, S&P 500 |
+| 16 | **News & Sentiment** | Deduplicated headlines with FinGPT sentiment badges |
+| 17 | **Legendary Investors** | SEC 13F cross-reference against 25+ top investors. Dynamic ticker search |
+| 18 | **What-If Simulator** | Preview metric changes before executing a trade |
+| 19 | **Regime Risk Engine** | Rolling volatility regime detection with conditional VaR |
+| 20 | **Event Calendar** | Upcoming earnings dates with historical return distributions |
+| 21 | **Data Quality** | Per-ticker completeness, freshness, gaps, and quality score |
+
+Every section has an **(i)** info button that opens an educational modal explaining the methodology, formulas, inputs, and interpretation.
 
 ---
 
@@ -324,93 +237,95 @@ Displayed as overlays on interactive candlestick charts (Plotly.js).
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/health` | GET | Backend + model server status |
-| `/api/quote/{symbol}` | GET | Real-time quote |
-| `/api/daily/{symbol}` | GET | Daily OHLCV data |
-| `/api/news` | GET | Financial news for tickers |
-| `/api/macro` | GET | FRED macro indicators |
-| `/api/filings/{ticker}` | GET | SEC EDGAR filings |
-| `/api/options/{symbol}` | GET | Options chain (calls/puts) |
-| `/api/portfolio/analyze` | POST | Full portfolio analysis |
-| `/api/model/analyze` | POST | Direct FinGPT access |
-| `/api/cache/clear` | POST | Clear data cache |
+| `/api/quote/{symbol}` | GET | Real-time stock quote |
+| `/api/daily/{symbol}` | GET | Daily OHLCV data (default 100 bars) |
+| `/api/news` | GET | Financial news for tickers (comma-separated) |
+| `/api/macro` | GET | FRED macro snapshot (5 indicators) |
+| `/api/filings/{ticker}` | GET | SEC EDGAR filings (10-K, 10-Q) |
+| `/api/options/{symbol}` | GET | Options chain with Greeks and IV skew |
+| `/api/earnings` | GET | Upcoming earnings dates and historical returns |
+| `/api/holders` | GET | Institutional holders and legendary investor matches |
+| `/api/portfolio/analyze` | POST | Full portfolio analysis (all analytics) |
+| `/api/whatif` | POST | What-if trade simulation with metric deltas |
+| `/api/regime` | POST | Regime detection and conditional VaR |
+| `/api/data-quality` | POST | Per-ticker data quality report |
+| `/api/model/analyze` | POST | Direct FinGPT access (sentiment/headline/insight) |
+| `/api/cache/clear` | POST | Clear the in-memory data cache |
+
+Full interactive API docs available at **http://localhost:8000/docs** (Swagger UI).
 
 ---
 
-## Setup
+## Quantitative Methods
 
-### 1. Clone and Install
+### Returns and Risk
 
-```bash
-git clone https://github.com/YOUR_USERNAME/FINGPT.git
-cd FINGPT
-pip install -r requirements.txt
-```
+| Metric | Formula | Notes |
+|--------|---------|-------|
+| Log returns | `r_t = ln(P_t / P_{t-1})` | Used everywhere. Oldest-first output. |
+| Annualized volatility | `sigma * sqrt(252)` | Bessel-corrected (ddof=1). Full covariance for portfolio level. |
+| Sharpe ratio | `(R_p - R_f) / sigma_p` | R_f from live 10Y Treasury. |
+| Sortino ratio | `(R_p - R_f) / sigma_downside` | Only penalizes returns below MAR. |
+| Calmar ratio | `R_annual / MaxDD` | Return per unit of worst-case loss. |
+| Treynor ratio | `(R_p - R_f) / beta` | Excess return per unit of systematic risk. |
+| Information ratio | `mean(R_p - R_b) / std(R_p - R_b)` | Active return vs SPY, annualized. |
+| Beta | OLS slope of `r_stock ~ r_spy` | 252-day window. Single canonical source. |
+| Jensen's alpha | `R_p - (R_f + beta * (R_m - R_f))` | CAPM residual. Positive = skill. |
+| HHI | `sum(w_i^2)` | Concentration. 1/n = perfect diversification. |
+| Effective N | `1 / HHI` | Equivalent number of equal-weight positions. |
+| Diversification ratio | `sum(w_i * sigma_i) / sigma_portfolio` | >1 means correlations are helping. |
+| Max drawdown | `max((peak - trough) / peak)` | Scanned across full price history. |
+| RSI-14 | Wilder smoothing | Seeded with SMA of first 14 deltas, then exponentially smoothed. |
 
-Dependencies: `fastapi`, `uvicorn`, `httpx`, `python-dotenv`, `pandas`, `numpy`, `yfinance`, `scipy`, `PyPortfolioOpt`
+### Monte Carlo VaR
 
-### 2. Configure API Keys
+1. Build daily log return matrix, align to common length
+2. Estimate mean vector, covariance matrix (Bessel), Student-t dof per asset (MLE)
+3. Cholesky factor `L = cholesky(Sigma + 1e-10 * I)`
+4. Draw 10,000 x 30 days of iid Student-t vectors, rescale by `sqrt((nu-2)/nu)`, apply `L`
+5. Portfolio daily log return = weight dot product. Cumulate and convert to simple returns.
+6. VaR 95 = 5th percentile. CVaR 95 = mean below VaR.
 
-```bash
-cp config/.env.example config/.env
-```
+### Efficient Frontier
 
-Edit `config/.env`:
+1. Ledoit-Wolf shrunk covariance for stability
+2. Black-Litterman implied returns: `Pi = lambda * Sigma * w_market` (lambda=2.5)
+3. Blend 50/50 with historical mean returns
+4. Box constraints: 5% to 60% per position
+5. Sweep 50 target returns between min-vol and max-Sharpe
 
-```ini
-FRED_API_KEY=your_fred_key_here          # https://fred.stlouisfed.org/docs/api/api_key.html
-SEC_USER_AGENT=YourName your@email.edu   # Required by SEC fair access policy
-HF_TOKEN=hf_xxxx                         # https://huggingface.co/settings/tokens
-NGROK_AUTH_TOKEN=xxxx                     # https://dashboard.ngrok.com/signup
-COLAB_MODEL_URL=http://localhost:5000     # Updated after running Colab notebook
-```
+### Black-Scholes Greeks
 
-`config/.env` is in `.gitignore` and will never be pushed.
+| Greek | Meaning | Computed as |
+|-------|---------|-------------|
+| Delta | Price sensitivity | `dC/dS = N(d1)` for calls |
+| Gamma | Delta sensitivity | `d2C/dS2 = n(d1) / (S * sigma * sqrt(T))` |
+| Theta | Time decay | `dC/dT / 365` (per calendar day) |
+| Vega | Volatility sensitivity | `dC/dsigma / 100` (per vol point) |
+| Rho | Rate sensitivity | `dC/dr / 100` (per rate point) |
 
-### 3. Start the Backend
+### Stress Testing
 
-```bash
-python backend/app.py
-```
+| Scenario | Period | Market Drop |
+|----------|--------|-------------|
+| 2008 Global Financial Crisis | Sep 2008 - Mar 2009 | -38.9% |
+| COVID-19 Crash | Feb - Mar 2020 | -33.7% |
+| 2022 Rate Hike Selloff | Jan - Oct 2022 | -25.2% |
+| Dot-Com Bust | Mar 2000 - Oct 2002 | -49.1% |
+| 2010 Flash Crash | May 6, 2010 | -6.9% |
 
-Open http://localhost:8000 in your browser. All quantitative analytics work immediately.
-
-### 4. (Optional) Enable AI Features
-
-1. Open `colab/fingpt_server.ipynb` in Google Colab
-2. Set runtime to **T4 GPU**
-3. Add `HF_TOKEN` and `NGROK_AUTH_TOKEN` as Colab secrets
-4. Run all cells. Copy the ngrok URL into `config/.env` as `COLAB_MODEL_URL`
-5. The dashboard status indicator will turn green when connected
+Portfolio loss = `portfolio_beta * market_drop`. Reverse stress test: `market_drop = loss_threshold / portfolio_beta`.
 
 ---
 
-## Supported Assets
+## Data Sources
 
-- **Stocks** — Enter ticker symbols directly: `AAPL`, `MSFT`, `GOOGL`, `NVDA`
-- **Crypto** — Enter shorthand: `BTC`, `ETH`, `SOL` (auto-mapped to `BTC-USD` format, uses 365-day annualization)
-- **Options** — View options chains (calls/puts, IV, volume, OI) for any stock holding after analysis
-
----
-
-## Dashboard Sections
-
-| Section | Description |
-|---------|-------------|
-| **Your Portfolio** | Input holdings (symbol, shares, avg cost) |
-| **Portfolio Summary** | Total value, gain/loss, volatility, Sharpe, Sortino, Beta, Alpha, diversification |
-| **AI Insight** | FinGPT-generated portfolio commentary (requires Colab) |
-| **Holdings Detail** | Per-stock metrics table with CSV/JSON export |
-| **Price Charts** | Interactive candlestick charts with SMA-20/SMA-50 overlays per holding |
-| **Monte Carlo VaR** | 10,000-path simulation with VaR/CVaR risk cards, return histogram, fan chart |
-| **Efficient Frontier** | Markowitz optimization with current vs. optimal allocation comparison |
-| **Correlation Matrix** | Pairwise correlation heatmap with diversification interpretation |
-| **Stress Testing** | Beta-adjusted losses under 5 historical crises |
-| **Options Chain** | Calls/puts with strike, bid/ask, IV, volume, open interest |
-| **Allocation** | Doughnut chart of portfolio weights |
-| **Macro Environment** | Live FRED data (Fed Funds Rate, CPI, unemployment, Treasury 10Y, S&P 500) |
-| **News & Sentiment** | Headlines with FinGPT sentiment badges (when AI is enabled) |
-
-Each section has an **info button** (i) that opens an educational explanation of the feature, the methodology, and why it matters.
+| Source | Data | Auth |
+|--------|------|------|
+| **yfinance** | Prices, OHLCV, options chains, news, earnings calendar, institutional holders | None (free) |
+| **FRED API** | Fed Funds Rate, CPI (YoY computed), unemployment, 10Y Treasury, S&P 500 | Free API key |
+| **SEC EDGAR** | Company filings (10-K, 10-Q) | User-Agent string |
+| **FinGPT (Colab)** | Sentiment, headline classification, portfolio insight | HuggingFace token + ngrok |
 
 ---
 
@@ -418,38 +333,55 @@ Each section has an **info button** (i) that opens an educational explanation of
 
 ```
 fingpt-portfolio/
-├── config/
-│   ├── .env.example          # Template with placeholder keys
-│   └── .env                  # Your secrets (git-ignored)
-├── colab/
-│   └── fingpt_server.ipynb   # Run on Google Colab with T4 GPU
 ├── backend/
-│   ├── app.py                # FastAPI server, routes, orchestration
-│   ├── advanced_analytics.py # Monte Carlo, Efficient Frontier, Correlation, Stress Test
-│   ├── cache.py              # In-memory TTL cache (prices 1hr, quotes 5min, macro 4hr)
-│   ├── data_fetcher.py       # yfinance, FRED API, SEC EDGAR clients
-│   ├── model_client.py       # Async bridge to FinGPT Colab server
-│   └── portfolio.py          # Core analytics: Sharpe, Sortino, Beta, Alpha, Treynor, Calmar
+│   ├── app.py                 # FastAPI server, 15 API endpoints, request routing
+│   ├── portfolio.py           # Core analytics: returns, volatility, beta, alpha,
+│   │                          #   Sharpe, Sortino, Treynor, Calmar, RSI, tax, tariff
+│   ├── advanced_analytics.py  # Monte Carlo VaR, Efficient Frontier, Correlation,
+│   │                          #   Stress Test, What-If Simulator, Regime Detection,
+│   │                          #   Data Quality Report
+│   ├── data_fetcher.py        # yfinance client (quotes, daily, news, options,
+│   │                          #   earnings, institutional holders), FRED client
+│   │                          #   (macro indicators, CPI YoY), SEC EDGAR client
+│   ├── options_math.py        # Black-Scholes pricing and Greeks
+│   ├── cache.py               # In-memory TTL cache (no external dependencies)
+│   └── model_client.py        # Async HTTP bridge to FinGPT Colab server
 ├── frontend/
 │   └── static/
-│       └── index.html        # Single-page dashboard (Plotly.js + Chart.js)
+│       └── index.html         # Single-page dashboard (~1500 lines)
+│                              #   Plotly.js, Chart.js, 20 panels, nav bar
+├── colab/
+│   └── fingpt_server.ipynb    # Llama-2-7B + FinGPT LoRA on Colab T4 GPU
+├── config/
+│   ├── .env.example           # Template with placeholder keys
+│   └── .env                   # Your secrets (git-ignored)
+├── tests/
+│   └── test_spec_validation.py  # Validation tests for math correctness
 ├── requirements.txt
-├── .gitignore
-├── LICENSE
+├── CHANGELOG.md
+├── LICENSE                    # MIT
 └── README.md
 ```
 
 ---
 
-## Version History
+## Supported Assets
 
-| Version | Author | Changes |
-|---------|--------|---------|
-| **v3** | Askar Kassimov | Core platform: FastAPI backend, yfinance/FRED/SEC data fetching, portfolio analytics (Sharpe, volatility, max drawdown, diversification), FinGPT Colab integration, frontend dashboard with allocation chart, news, macro indicators, options chain |
-| **v4** | Shihan Mahfuz | Monte Carlo VaR/CVaR (10K simulations), Markowitz Efficient Frontier (PyPortfolioOpt), Correlation Matrix heatmap, Historical Stress Testing (5 crises), Sortino/Calmar/Beta/Alpha/Treynor ratios, interactive candlestick charts with SMA overlays, SPY benchmark integration, frontend redesign with educational info modals, in-memory caching system |
+- **Stocks**: Enter ticker symbols directly (AAPL, MSFT, GOOGL, NVDA, TSLA, etc.)
+- **Crypto**: Enter shorthand (BTC, ETH, SOL, ADA, DOGE, etc.) -- auto-mapped to BTC-USD format with 365-day annualization
+- **Options**: View full chains with Greeks for any stock holding after analysis
+
+---
+
+## Requirements
+
+- Python 3.9+
+- Dependencies: `fastapi`, `uvicorn`, `httpx`, `pandas`, `numpy`, `yfinance`, `scipy`, `PyPortfolioOpt`
+- Browser: Any modern browser (Chrome, Firefox, Safari, Edge)
+- Optional: Google Colab account with T4 GPU access (free tier works) for AI features
 
 ---
 
 ## License
 
-MIT
+MIT License. See [LICENSE](LICENSE) for details.

@@ -397,6 +397,211 @@ class YFinanceClient:
             "greeks_method": "black_scholes_with_market_iv",
         }
 
+    def _get_earnings_calendar_sync(self, symbols: list[str]) -> list[dict]:
+        """Fetch upcoming earnings dates and historical earnings-day returns."""
+        events = []
+        for symbol in symbols:
+            try:
+                ticker = yf.Ticker(symbol)
+                cal = ticker.calendar
+                hist = ticker.history(period="1y")
+
+                next_earnings = None
+                if cal is not None:
+                    if isinstance(cal, dict):
+                        ed = cal.get("Earnings Date")
+                        if ed:
+                            next_earnings = str(ed[0])[:10] if isinstance(ed, list) else str(ed)[:10]
+                    elif hasattr(cal, "iloc"):
+                        try:
+                            ed = cal.iloc[0] if len(cal) > 0 else None
+                            if ed is not None:
+                                next_earnings = str(ed.name)[:10] if hasattr(ed, "name") else None
+                        except Exception:
+                            pass
+
+                # Historical earnings dates from earnings_dates attribute
+                earnings_returns = []
+                try:
+                    ed_df = ticker.earnings_dates
+                    if ed_df is not None and not ed_df.empty and not hist.empty:
+                        for dt in ed_df.index:
+                            dt_date = dt.date() if hasattr(dt, "date") else dt
+                            mask = hist.index.date == dt_date
+                            if mask.any():
+                                idx = hist.index.get_loc(hist.index[mask][0])
+                                if idx > 0:
+                                    prev_close = float(hist["Close"].iloc[idx - 1])
+                                    curr_close = float(hist["Close"].iloc[idx])
+                                    ret = (curr_close / prev_close - 1) * 100
+                                    earnings_returns.append(round(ret, 2))
+                except Exception:
+                    pass
+
+                avg_ret = round(sum(earnings_returns) / len(earnings_returns), 2) if earnings_returns else None
+                std_ret = None
+                if len(earnings_returns) >= 2:
+                    import statistics
+                    std_ret = round(statistics.stdev(earnings_returns), 2)
+
+                events.append({
+                    "symbol": symbol,
+                    "next_earnings": next_earnings,
+                    "historical_earnings_returns": earnings_returns[:8],
+                    "avg_earnings_day_return": avg_ret,
+                    "std_earnings_day_return": std_ret,
+                    "n_events": len(earnings_returns),
+                })
+            except Exception as e:
+                logger.warning("Failed to get earnings for %s: %s", symbol, e)
+                events.append({
+                    "symbol": symbol,
+                    "next_earnings": None,
+                    "historical_earnings_returns": [],
+                    "avg_earnings_day_return": None,
+                    "std_earnings_day_return": None,
+                    "n_events": 0,
+                })
+        return events
+
+    async def get_earnings_calendar(self, symbols: list[str]) -> list[dict]:
+        """Get earnings calendar for given stock symbols."""
+        cache_key = f"earnings:{','.join(sorted(symbols))}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            result = await _run_sync(self._get_earnings_calendar_sync, symbols)
+            cache.set(cache_key, result, ttl_seconds=3600)
+            return result
+        except Exception as e:
+            logger.error("Failed to fetch earnings calendar: %s", e)
+            return []
+
+    # ── Legendary investors / institutional holders ────────────
+
+    # Curated map: lowercased substring -> investor display name + bio
+    LEGENDARY_INVESTORS = {
+        "berkshire hathaway": {"name": "Warren Buffett", "fund": "Berkshire Hathaway", "style": "Value investing, long term compounder"},
+        "bridgewater": {"name": "Ray Dalio", "fund": "Bridgewater Associates", "style": "Macro, risk parity, all weather"},
+        "renaissance": {"name": "Jim Simons", "fund": "Renaissance Technologies", "style": "Quantitative, systematic trading"},
+        "citadel": {"name": "Ken Griffin", "fund": "Citadel Advisors", "style": "Multi strategy, market making"},
+        "soros fund": {"name": "George Soros", "fund": "Soros Fund Management", "style": "Macro, reflexivity theory"},
+        "two sigma": {"name": "John Overdeck & David Siegel", "fund": "Two Sigma Investments", "style": "Quantitative, AI driven"},
+        "point72": {"name": "Steve Cohen", "fund": "Point72 Asset Management", "style": "Multi strategy, discretionary"},
+        "pershing square": {"name": "Bill Ackman", "fund": "Pershing Square Capital", "style": "Activist, concentrated bets"},
+        "third point": {"name": "Dan Loeb", "fund": "Third Point LLC", "style": "Event driven, activist"},
+        "appaloosa": {"name": "David Tepper", "fund": "Appaloosa Management", "style": "Distressed debt, macro"},
+        "elliott": {"name": "Paul Singer", "fund": "Elliott Management", "style": "Activist, distressed, event driven"},
+        "baupost": {"name": "Seth Klarman", "fund": "Baupost Group", "style": "Deep value, margin of safety"},
+        "greenlight": {"name": "David Einhorn", "fund": "Greenlight Capital", "style": "Value, short selling"},
+        "lone pine": {"name": "Stephen Mandel", "fund": "Lone Pine Capital", "style": "Long short equity, growth"},
+        "viking global": {"name": "Andreas Halvorsen", "fund": "Viking Global Investors", "style": "Long short equity, fundamental"},
+        "millennium": {"name": "Israel Englander", "fund": "Millennium Management", "style": "Multi strategy, pod based"},
+        "d.e. shaw": {"name": "David Shaw", "fund": "D.E. Shaw & Co", "style": "Quantitative, systematic"},
+        "de shaw": {"name": "David Shaw", "fund": "D.E. Shaw & Co", "style": "Quantitative, systematic"},
+        "tiger global": {"name": "Chase Coleman", "fund": "Tiger Global Management", "style": "Growth equity, tech focused"},
+        "coatue": {"name": "Philippe Laffont", "fund": "Coatue Management", "style": "TMT focused, long short"},
+        "druckenmiller": {"name": "Stanley Druckenmiller", "fund": "Duquesne Family Office", "style": "Macro, growth at reasonable price"},
+        "duquesne": {"name": "Stanley Druckenmiller", "fund": "Duquesne Family Office", "style": "Macro, growth at reasonable price"},
+        "ark invest": {"name": "Cathie Wood", "fund": "ARK Invest", "style": "Disruptive innovation, high conviction"},
+        "icahn": {"name": "Carl Icahn", "fund": "Icahn Enterprises", "style": "Activist, corporate raider"},
+        "jana partners": {"name": "Barry Rosenstein", "fund": "JANA Partners", "style": "Activist, event driven"},
+        "valueact": {"name": "Mason Morfit", "fund": "ValueAct Capital", "style": "Constructive activism, concentrated"},
+    }
+
+    def _get_institutional_holders_sync(self, symbols: list[str]) -> dict:
+        """Fetch institutional holders for each symbol and flag legendary investors."""
+        result = {}
+        for symbol in symbols:
+            try:
+                ticker = yf.Ticker(symbol)
+                inst = ticker.institutional_holders
+                mf = ticker.mutualfund_holders
+
+                holders = []
+                legendary_matches = []
+
+                if inst is not None and not inst.empty:
+                    for _, row in inst.iterrows():
+                        holder_name = str(row.get("Holder", ""))
+                        shares_held = int(row.get("Shares", 0)) if row.get("Shares") else 0
+                        pct = float(row.get("pctHeld", 0) or row.get("% Out", 0) or 0)
+                        value = float(row.get("Value", 0)) if row.get("Value") else 0
+                        date_reported = str(row.get("Date Reported", ""))[:10] if row.get("Date Reported") is not None else ""
+
+                        entry = {
+                            "holder": holder_name,
+                            "shares": shares_held,
+                            "pct_held": round(pct * 100, 2),
+                            "value": round(value, 0),
+                            "date_reported": date_reported,
+                        }
+                        holders.append(entry)
+
+                        # Check if this is a legendary investor
+                        name_lower = holder_name.lower()
+                        for key, info in self.LEGENDARY_INVESTORS.items():
+                            if key in name_lower:
+                                legendary_matches.append({
+                                    **entry,
+                                    "investor_name": info["name"],
+                                    "fund_name": info["fund"],
+                                    "style": info["style"],
+                                })
+                                break
+
+                # Also check mutual fund holders for notable names
+                if mf is not None and not mf.empty:
+                    for _, row in mf.iterrows():
+                        holder_name = str(row.get("Holder", ""))
+                        name_lower = holder_name.lower()
+                        for key, info in self.LEGENDARY_INVESTORS.items():
+                            if key in name_lower:
+                                shares_held = int(row.get("Shares", 0)) if row.get("Shares") else 0
+                                pct = float(row.get("pctHeld", 0) or row.get("% Out", 0) or 0)
+                                value = float(row.get("Value", 0)) if row.get("Value") else 0
+                                date_reported = str(row.get("Date Reported", ""))[:10] if row.get("Date Reported") is not None else ""
+                                legendary_matches.append({
+                                    "holder": holder_name,
+                                    "shares": shares_held,
+                                    "pct_held": round(pct * 100, 2),
+                                    "value": round(value, 0),
+                                    "date_reported": date_reported,
+                                    "investor_name": info["name"],
+                                    "fund_name": info["fund"],
+                                    "style": info["style"],
+                                })
+                                break
+
+                result[symbol] = {
+                    "top_holders": holders[:10],
+                    "legendary": legendary_matches,
+                    "total_institutional_holders": len(holders),
+                }
+            except Exception as e:
+                logger.warning("Failed to get holders for %s: %s", symbol, e)
+                result[symbol] = {
+                    "top_holders": [],
+                    "legendary": [],
+                    "total_institutional_holders": 0,
+                }
+        return result
+
+    async def get_institutional_holders(self, symbols: list[str]) -> dict:
+        """Get institutional holders and legendary investor matches for symbols."""
+        cache_key = f"holders:{','.join(sorted(symbols))}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            result = await _run_sync(self._get_institutional_holders_sync, symbols)
+            cache.set(cache_key, result, ttl_seconds=3600)
+            return result
+        except Exception as e:
+            logger.error("Failed to fetch institutional holders: %s", e)
+            return {}
+
     async def get_options(self, symbol: str, expiration: str = None, risk_free_rate: float = 0.0435) -> dict:
         """Get options chain for a symbol enriched with Black Scholes Greeks."""
         cache_key = f"options:{symbol}:{expiration or 'nearest'}:{risk_free_rate:.4f}"
@@ -481,19 +686,37 @@ class FREDClient:
 
         async def _fetch_cpi_yoy(name, series_id):
             try:
-                obs = await self.get_indicator(series_id, limit=13)
-                if len(obs) < 13:
+                # Fetch 16 months to tolerate missing values (FRED occasionally
+                # has dot entries in the CPIAUCSL series).
+                obs = await self.get_indicator(series_id, limit=16)
+                if len(obs) < 2:
                     return name, {"error": "Not enough CPI history for year over year"}
-                current = float(obs[0]["value"])
-                year_ago = float(obs[12]["value"])
-                yoy_pct = cpi_yoy_pct(current, year_ago)
+                # Most recent valid observation.
+                current_val = float(obs[0]["value"])
+                current_date = obs[0]["date"]
+                # Find the observation closest to 12 months prior by date.
+                from datetime import datetime
+                cur_dt = datetime.strptime(current_date, "%Y-%m-%d")
+                target_dt = cur_dt.replace(year=cur_dt.year - 1)
+                best = None
+                best_dist = 9999
+                for o in obs[1:]:
+                    dt = datetime.strptime(o["date"], "%Y-%m-%d")
+                    dist = abs((dt - target_dt).days)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best = o
+                if best is None or best_dist > 45:
+                    return name, {"error": "Could not find CPI observation from 12 months ago"}
+                year_ago_val = float(best["value"])
+                yoy_pct = cpi_yoy_pct(current_val, year_ago_val)
                 return name, {
                     "value": f"{yoy_pct:.2f}",
-                    "date": obs[0]["date"],
+                    "date": current_date,
                     "series_id": series_id,
-                    "unit": "percent year over year",
-                    "cpi_current": round(current, 2),
-                    "cpi_year_ago": round(year_ago, 2),
+                    "unit": "percent",
+                    "cpi_current": round(current_val, 2),
+                    "cpi_year_ago": round(year_ago_val, 2),
                     "description": "CPI all urban consumers, year over year change",
                 }
             except Exception as e:
