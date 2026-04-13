@@ -166,11 +166,26 @@ async def get_options(symbol: str, expiration: str = None):
     treasury if available, otherwise defaults to the Fed Funds rate, and
     finally falls back to 4.35 percent.
     """
+    import math, json
+
     rf = await _current_risk_free_rate()
     result = await yf_client.get_options(symbol.upper(), expiration, risk_free_rate=rf)
     if "error" in result:
         raise HTTPException(404, result["error"])
-    return result
+
+    # Sanitize NaN/Inf values that break JSON serialization
+    def _sanitize(obj):
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+            return obj
+        if isinstance(obj, dict):
+            return {k: _sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize(v) for v in obj]
+        return obj
+
+    return _sanitize(result)
 
 
 async def _current_risk_free_rate() -> float:
