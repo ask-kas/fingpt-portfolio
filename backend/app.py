@@ -794,9 +794,45 @@ async def user_activity_summary(user_id: str, db: Session = Depends(get_db)):
 
 # ── Admin Dashboard ──────────────────────────────────────────
 
+@app.post("/api/db/admin/login")
+async def admin_login(req: schemas.UserLogin, request: Request,
+                      db: Session = Depends(get_db)):
+    """Authenticate as admin. Returns user if they have admin privileges."""
+    user = crud.authenticate_user(
+        db, req.username, req.password,
+        ip=request.client.host if request.client else None,
+    )
+    if not user:
+        raise HTTPException(401, "Invalid credentials")
+    if not user.is_admin:
+        raise HTTPException(403, "Access denied: admin privileges required")
+    return {"ok": True, "username": user.username, "user_id": user.id}
+
+
+@app.post("/api/db/admin/promote/{username}")
+async def promote_to_admin(username: str, admin_key: str = Query(...),
+                           db: Session = Depends(get_db)):
+    """Promote a user to admin. Requires ADMIN_KEY from config/.env."""
+    import os
+    expected_key = os.getenv("ADMIN_KEY", "fingpt-admin-2026")
+    if admin_key != expected_key:
+        raise HTTPException(403, "Invalid admin key")
+    user = crud.get_user_by_username(db, username)
+    if not user:
+        raise HTTPException(404, f"User '{username}' not found")
+    user.is_admin = True
+    crud.audit_log(db, user.id, "promote_admin", "user", user.id)
+    db.commit()
+    return {"ok": True, "message": f"User '{username}' is now an admin"}
+
+
 @app.get("/api/db/admin/overview")
-async def admin_overview(db: Session = Depends(get_db)):
-    """Full database overview for the admin panel."""
+async def admin_overview(user_id: str = Query(..., description="Admin user ID"),
+                         db: Session = Depends(get_db)):
+    """Full database overview for the admin panel. Requires admin user_id."""
+    admin_user = crud.get_user(db, user_id)
+    if not admin_user or not admin_user.is_admin:
+        raise HTTPException(403, "Access denied: admin privileges required")
     from backend.database.models import (
         User, Portfolio, Holding, AnalysisSnapshot,
         TradeJournal, Watchlist, Alert, AuditLog,

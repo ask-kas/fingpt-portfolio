@@ -363,6 +363,26 @@
   .admin-table-wrap { overflow-x: auto; max-height: 400px; overflow-y: auto; }
   .admin-table-wrap table { width: 100%; }
   .admin-table-wrap th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+  .admin-login-gate {
+    text-align: center; padding: 40px 20px;
+  }
+  .admin-login-gate h3 { font-size: 1rem; margin-bottom: 6px; color: var(--fg); }
+  .admin-login-gate p { font-size: 0.78rem; color: var(--muted); margin-bottom: 20px; }
+  .admin-login-gate input {
+    display: block; width: 280px; margin: 8px auto; padding: 10px 14px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--fg); font-size: 0.85rem;
+  }
+  .admin-login-gate input:focus { border-color: var(--accent); outline: none; }
+  .admin-login-gate .admin-login-btn {
+    margin-top: 16px; padding: 10px 32px; background: linear-gradient(135deg, var(--red), #fb923c);
+    color: white; border: none; border-radius: 8px; font-weight: 700; cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .admin-login-gate .admin-login-btn:hover { opacity: 0.9; }
+  .admin-login-gate .admin-error {
+    color: var(--red); font-size: 0.78rem; margin-top: 10px; min-height: 1.2em;
+  }
   .admin-close {
     float: right; background: transparent; border: 1px solid var(--border);
     color: var(--muted); padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
@@ -394,22 +414,34 @@
 <div class="admin-overlay" id="adminOverlay" onclick="if(event.target===this)closeAdmin()">
   <div class="admin-panel">
     <button class="admin-close" onclick="closeAdmin()">Close</button>
-    <h2><span class="section-badge"></span> Database Admin <span class="admin-badge">Admin</span>
-      <button class="admin-refresh" onclick="loadAdminData()">Refresh</button>
-    </h2>
-    <div id="adminStats" class="admin-stat-grid"></div>
-    <div class="admin-tabs" id="adminTabs">
-      <div class="admin-tab active" onclick="switchAdminTab('users')">Users</div>
-      <div class="admin-tab" onclick="switchAdminTab('portfolios')">Portfolios</div>
-      <div class="admin-tab" onclick="switchAdminTab('holdings')">Holdings</div>
-      <div class="admin-tab" onclick="switchAdminTab('snapshots')">Snapshots</div>
-      <div class="admin-tab" onclick="switchAdminTab('trades')">Trades</div>
-      <div class="admin-tab" onclick="switchAdminTab('watchlist')">Watchlist</div>
-      <div class="admin-tab" onclick="switchAdminTab('alerts')">Alerts</div>
-      <div class="admin-tab" onclick="switchAdminTab('audit')">Audit Log</div>
+    <!-- Admin Login Gate -->
+    <div id="adminLoginGate" class="admin-login-gate">
+      <h3>Admin Login</h3>
+      <p>Enter admin credentials to access the database dashboard</p>
+      <input type="text" id="adminUsername" placeholder="Username" onkeydown="if(event.key==='Enter')doAdminLogin()">
+      <input type="password" id="adminPassword" placeholder="Password" onkeydown="if(event.key==='Enter')doAdminLogin()">
+      <button class="admin-login-btn" onclick="doAdminLogin()">Sign In as Admin</button>
+      <div class="admin-error" id="adminLoginError"></div>
     </div>
-    <div id="adminContent" class="admin-table-wrap">
-      <p style="color:var(--muted)">Loading...</p>
+    <!-- Admin Dashboard (hidden until authenticated) -->
+    <div id="adminDashboard" style="display:none">
+      <h2><span class="section-badge"></span> Database Admin <span class="admin-badge">Admin</span>
+        <button class="admin-refresh" onclick="loadAdminData()">Refresh</button>
+      </h2>
+      <div id="adminStats" class="admin-stat-grid"></div>
+      <div class="admin-tabs" id="adminTabs">
+        <div class="admin-tab active" onclick="switchAdminTab('users')">Users</div>
+        <div class="admin-tab" onclick="switchAdminTab('portfolios')">Portfolios</div>
+        <div class="admin-tab" onclick="switchAdminTab('holdings')">Holdings</div>
+        <div class="admin-tab" onclick="switchAdminTab('snapshots')">Snapshots</div>
+        <div class="admin-tab" onclick="switchAdminTab('trades')">Trades</div>
+        <div class="admin-tab" onclick="switchAdminTab('watchlist')">Watchlist</div>
+        <div class="admin-tab" onclick="switchAdminTab('alerts')">Alerts</div>
+        <div class="admin-tab" onclick="switchAdminTab('audit')">Audit Log</div>
+      </div>
+      <div id="adminContent" class="admin-table-wrap">
+        <p style="color:var(--muted)">Loading...</p>
+      </div>
     </div>
   </div>
 </div>
@@ -2144,20 +2176,54 @@ function _download(c, f, t) { const b = new Blob([c], { type: t }), u = URL.crea
 // ── Admin Panel ──────────────────────────────────────────────
 let _adminData = null;
 let _adminTab = 'users';
+let _adminUserId = null;
 
 function openAdmin() {
+  _adminUserId = null;
+  document.getElementById('adminLoginGate').style.display = '';
+  document.getElementById('adminDashboard').style.display = 'none';
+  document.getElementById('adminUsername').value = '';
+  document.getElementById('adminPassword').value = '';
+  document.getElementById('adminLoginError').textContent = '';
   document.getElementById('adminOverlay').classList.add('active');
-  loadAdminData();
+  document.getElementById('adminUsername').focus();
 }
 function closeAdmin() {
   document.getElementById('adminOverlay').classList.remove('active');
+  _adminUserId = null;
+}
+
+async function doAdminLogin() {
+  const username = document.getElementById('adminUsername').value.trim();
+  const password = document.getElementById('adminPassword').value;
+  const errorEl = document.getElementById('adminLoginError');
+  errorEl.textContent = '';
+  if (!username || !password) { errorEl.textContent = 'Enter username and password'; return; }
+  try {
+    const r = await fetch('/api/db/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (r.status === 401) { errorEl.textContent = 'Invalid credentials'; return; }
+    if (r.status === 403) { errorEl.textContent = 'Access denied: not an admin account'; return; }
+    if (!r.ok) { errorEl.textContent = 'Login failed'; return; }
+    const data = await r.json();
+    _adminUserId = data.user_id;
+    document.getElementById('adminLoginGate').style.display = 'none';
+    document.getElementById('adminDashboard').style.display = '';
+    loadAdminData();
+  } catch (e) {
+    errorEl.textContent = 'Connection error';
+  }
 }
 
 async function loadAdminData() {
   const content = document.getElementById('adminContent');
   content.innerHTML = '<div class="loader">Loading database</div>';
   try {
-    const r = await fetch('/api/db/admin/overview');
+    const r = await fetch(`/api/db/admin/overview?user_id=${encodeURIComponent(_adminUserId)}`);
+    if (r.status === 403) { closeAdmin(); openAdmin(); return; }
     if (!r.ok) throw new Error('Failed to load');
     _adminData = await r.json();
     renderAdminStats();

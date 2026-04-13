@@ -43,6 +43,7 @@ class User(Base):
     password_hash = Column(String(256), nullable=False)
     display_name = Column(String(128), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
+    is_admin = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     last_login = Column(DateTime(timezone=True), nullable=True)
 
