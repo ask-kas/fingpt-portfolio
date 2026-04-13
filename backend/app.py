@@ -792,6 +792,111 @@ async def user_activity_summary(user_id: str, db: Session = Depends(get_db)):
     return crud.get_user_activity_summary(db, user_id)
 
 
+# ── Admin Dashboard ──────────────────────────────────────────
+
+@app.get("/api/db/admin/overview")
+async def admin_overview(db: Session = Depends(get_db)):
+    """Full database overview for the admin panel."""
+    from backend.database.models import (
+        User, Portfolio, Holding, AnalysisSnapshot,
+        TradeJournal, Watchlist, Alert, AuditLog,
+    )
+    from sqlalchemy import func, desc
+
+    def _serialize_rows(rows, columns):
+        return [dict(zip(columns, r)) for r in rows]
+
+    # Stats
+    stats = {
+        "users": db.query(func.count(User.id)).scalar(),
+        "portfolios": db.query(func.count(Portfolio.id)).scalar(),
+        "holdings": db.query(func.count(Holding.id)).scalar(),
+        "snapshots": db.query(func.count(AnalysisSnapshot.id)).scalar(),
+        "trades": db.query(func.count(TradeJournal.id)).scalar(),
+        "watchlist": db.query(func.count(Watchlist.id)).scalar(),
+        "alerts": db.query(func.count(Alert.id)).scalar(),
+        "audit_events": db.query(func.count(AuditLog.id)).scalar(),
+    }
+
+    # Users
+    users = db.execute(
+        db.query(User.username, User.email, User.is_active, User.created_at, User.last_login)
+        .order_by(desc(User.created_at)).statement
+    ).fetchall()
+
+    # Portfolios with user
+    portfolios = db.execute(
+        db.query(User.username, Portfolio.name, Portfolio.is_default, Portfolio.created_at)
+        .join(User, User.id == Portfolio.user_id)
+        .order_by(desc(Portfolio.created_at)).statement
+    ).fetchall()
+
+    # Holdings with user
+    holdings_rows = db.execute(
+        db.query(User.username, Holding.symbol, Holding.shares, Holding.avg_cost,
+                 Holding.asset_class, Holding.added_at)
+        .join(Portfolio, Portfolio.id == Holding.portfolio_id)
+        .join(User, User.id == Portfolio.user_id)
+        .order_by(User.username, Holding.symbol).statement
+    ).fetchall()
+
+    # Snapshots
+    snapshots = db.execute(
+        db.query(User.username, AnalysisSnapshot.total_value, AnalysisSnapshot.sharpe_ratio,
+                 AnalysisSnapshot.portfolio_beta, AnalysisSnapshot.var_95,
+                 AnalysisSnapshot.num_holdings, AnalysisSnapshot.created_at)
+        .join(Portfolio, Portfolio.id == AnalysisSnapshot.portfolio_id)
+        .join(User, User.id == Portfolio.user_id)
+        .order_by(desc(AnalysisSnapshot.created_at)).limit(50).statement
+    ).fetchall()
+
+    # Trades
+    trades = db.execute(
+        db.query(User.username, TradeJournal.symbol, TradeJournal.action,
+                 TradeJournal.shares, TradeJournal.price, TradeJournal.trade_type,
+                 TradeJournal.executed_at)
+        .join(Portfolio, Portfolio.id == TradeJournal.portfolio_id)
+        .join(User, User.id == Portfolio.user_id)
+        .order_by(desc(TradeJournal.executed_at)).limit(50).statement
+    ).fetchall()
+
+    # Watchlist
+    watchlist_rows = db.execute(
+        db.query(User.username, Watchlist.symbol, Watchlist.target_price,
+                 Watchlist.notes, Watchlist.added_at)
+        .join(User, User.id == Watchlist.user_id)
+        .order_by(desc(Watchlist.added_at)).statement
+    ).fetchall()
+
+    # Alerts
+    alerts_rows = db.execute(
+        db.query(User.username, Alert.symbol, Alert.metric, Alert.condition,
+                 Alert.threshold, Alert.is_active, Alert.trigger_count, Alert.created_at)
+        .join(User, User.id == Alert.user_id)
+        .order_by(desc(Alert.created_at)).statement
+    ).fetchall()
+
+    # Audit log (last 100)
+    audit = db.execute(
+        db.query(User.username, AuditLog.action, AuditLog.resource_type,
+                 AuditLog.resource_id, AuditLog.timestamp)
+        .outerjoin(User, User.id == AuditLog.user_id)
+        .order_by(desc(AuditLog.timestamp)).limit(100).statement
+    ).fetchall()
+
+    return {
+        "stats": stats,
+        "users": _serialize_rows(users, ["username", "email", "is_active", "created_at", "last_login"]),
+        "portfolios": _serialize_rows(portfolios, ["username", "name", "is_default", "created_at"]),
+        "holdings": _serialize_rows(holdings_rows, ["username", "symbol", "shares", "avg_cost", "asset_class", "added_at"]),
+        "snapshots": _serialize_rows(snapshots, ["username", "total_value", "sharpe_ratio", "portfolio_beta", "var_95", "num_holdings", "created_at"]),
+        "trades": _serialize_rows(trades, ["username", "symbol", "action", "shares", "price", "trade_type", "executed_at"]),
+        "watchlist": _serialize_rows(watchlist_rows, ["username", "symbol", "target_price", "notes", "added_at"]),
+        "alerts": _serialize_rows(alerts_rows, ["username", "symbol", "metric", "condition", "threshold", "is_active", "trigger_count", "created_at"]),
+        "audit": _serialize_rows(audit, ["username", "action", "resource_type", "resource_id", "timestamp"]),
+    }
+
+
 # ── Helper ──────────────────────────────────────────────────
 
 def _build_insight_prompt(analytics: dict, macro: dict, news: list) -> str:

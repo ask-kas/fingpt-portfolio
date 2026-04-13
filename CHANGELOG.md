@@ -4,6 +4,63 @@ All notable changes to FinGPT Portfolio Analyzer.
 
 ---
 
+## v1.1.0 (2026-04-12)
+
+Database persistence layer with user authentication, portfolio auto-save, admin dashboard, and 30 new API endpoints.
+
+### Added
+
+**Database Persistence** (Shihan Mahfuz)
+- SQLAlchemy ORM with 8 models: User, Portfolio, Holding, AnalysisSnapshot, TradeJournal, Watchlist, Alert, AuditLog
+- Multi-backend support: SQLite (default, zero-config), MySQL, PostgreSQL via DATABASE_URL
+- Connection pooling (pool_size=10, max_overflow=20, pool_recycle=3600, pool_pre_ping=True)
+- 35+ CRUD functions with automatic audit logging on every write
+- 22 Pydantic request/response schemas with validation
+- Holdings auto-merge on duplicate symbol with weighted-average cost basis
+- Auto-snapshot: every `/api/portfolio/analyze` call saves full analytics payload to DB
+- Snapshot time-series queries for tracking portfolio metrics over time
+
+**User Authentication**
+- Login, register, and guest mode with session persistence via localStorage
+- Auth overlay on app launch (login form, registration form, guest bypass)
+- User bar in header showing logged-in username with Sign Out button
+
+**Admin Dashboard**
+- Admin button in header (visible to all logged-in users)
+- Tabbed overlay panel showing all 8 database tables
+- Aggregate stats grid (users, portfolios, holdings, snapshots, trades)
+- Dynamic table rendering with smart formatting (timestamps, currency, booleans)
+- Single API call (`/api/db/admin/overview`) joins all tables with usernames
+
+**30 New API Endpoints** under `/api/db/`
+- User auth: register, login, get, update, dashboard stats
+- Portfolio CRUD: create, read, update, delete, list by user
+- Holdings CRUD: list, add (with merge), update, delete
+- Snapshots: list (paginated), detail, latest, time-series
+- Trade journal: record, list, summary stats
+- Watchlist: add, list, update, remove
+- Alerts: create, list, update, remove
+- Audit log: recent activity by user
+- Admin: full overview with all tables and stats
+
+**Frontend Enhancements**
+- Auth overlay with login/register/guest mode
+- Session management (auto-load portfolio on return)
+- Holdings auto-sync to database on successful analysis
+- Save indicator flash on successful DB write
+- Admin dashboard panel with tabbed table viewer
+
+**Infrastructure**
+- `backend/database/` package: engine.py, models.py, crud.py, schemas.py
+- SQLite WAL mode with foreign keys enabled
+- UUID hex primary keys, UTC timestamps throughout
+- JSON columns for analytics snapshot payloads
+- `requirements.txt`: added SQLAlchemy, PyMySQL
+- `config/.env.example`: added DATABASE_URL and individual DB config vars
+- `.gitignore`: added `data/` for SQLite database file
+
+---
+
 ## v1.0.0 (2026-04-12)
 
 Full institutional-grade analytics platform with 21 dashboard panels, 15 API endpoints, and interactive educational documentation.

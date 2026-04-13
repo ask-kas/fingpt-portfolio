@@ -328,6 +328,52 @@
   .user-bar .save-indicator { font-size: 0.7rem; color: var(--green); opacity: 0; transition: opacity 0.3s; }
   .user-bar .save-indicator.show { opacity: 1; }
 
+  /* ── Admin Panel ───────────────────────────── */
+  .admin-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); z-index: 1500; backdrop-filter: blur(6px);
+    display: none; justify-content: center; align-items: flex-start;
+    padding: 40px 20px; overflow-y: auto;
+  }
+  .admin-overlay.active { display: flex; }
+  .admin-panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px; width: 1100px; max-width: 98%;
+    box-shadow: 0 24px 48px rgba(0,0,0,0.5);
+  }
+  .admin-panel h2 { font-size: 1.15rem; font-weight: 700; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+  .admin-panel h2 span.admin-badge {
+    background: linear-gradient(135deg, var(--red), #fb923c);
+    color: white; font-size: 0.62rem; padding: 2px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700;
+  }
+  .admin-tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+  .admin-tab {
+    background: var(--bg); color: var(--muted); border: 1px solid var(--border);
+    padding: 6px 16px; border-radius: 6px; font-size: 0.78rem; cursor: pointer; font-weight: 600;
+  }
+  .admin-tab.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .admin-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px; }
+  .admin-stat {
+    background: var(--bg); border-radius: 8px; padding: 12px; text-align: center;
+    border: 1px solid var(--border);
+  }
+  .admin-stat .a-label { font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+  .admin-stat .a-value { font-size: 1.3rem; font-weight: 700; margin-top: 2px; color: var(--accent2); }
+  .admin-table-wrap { overflow-x: auto; max-height: 400px; overflow-y: auto; }
+  .admin-table-wrap table { width: 100%; }
+  .admin-table-wrap th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+  .admin-close {
+    float: right; background: transparent; border: 1px solid var(--border);
+    color: var(--muted); padding: 4px 12px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
+  }
+  .admin-close:hover { border-color: var(--red); color: var(--red); }
+  .admin-refresh {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--accent2); padding: 4px 12px; border-radius: 6px; font-size: 0.72rem; cursor: pointer; margin-left: 8px;
+  }
+  .admin-refresh:hover { border-color: var(--accent); }
+
   /* ── Candlestick panel ──────────────────────── */
   .candle-tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
   .candle-tab {
@@ -342,6 +388,30 @@
 <!-- Info Modal -->
 <div class="info-modal-overlay" id="infoOverlay" onclick="if(event.target===this)closeInfo()">
   <div class="info-modal" id="infoModal"></div>
+</div>
+
+<!-- Admin Panel Overlay -->
+<div class="admin-overlay" id="adminOverlay" onclick="if(event.target===this)closeAdmin()">
+  <div class="admin-panel">
+    <button class="admin-close" onclick="closeAdmin()">Close</button>
+    <h2><span class="section-badge"></span> Database Admin <span class="admin-badge">Admin</span>
+      <button class="admin-refresh" onclick="loadAdminData()">Refresh</button>
+    </h2>
+    <div id="adminStats" class="admin-stat-grid"></div>
+    <div class="admin-tabs" id="adminTabs">
+      <div class="admin-tab active" onclick="switchAdminTab('users')">Users</div>
+      <div class="admin-tab" onclick="switchAdminTab('portfolios')">Portfolios</div>
+      <div class="admin-tab" onclick="switchAdminTab('holdings')">Holdings</div>
+      <div class="admin-tab" onclick="switchAdminTab('snapshots')">Snapshots</div>
+      <div class="admin-tab" onclick="switchAdminTab('trades')">Trades</div>
+      <div class="admin-tab" onclick="switchAdminTab('watchlist')">Watchlist</div>
+      <div class="admin-tab" onclick="switchAdminTab('alerts')">Alerts</div>
+      <div class="admin-tab" onclick="switchAdminTab('audit')">Audit Log</div>
+    </div>
+    <div id="adminContent" class="admin-table-wrap">
+      <p style="color:var(--muted)">Loading...</p>
+    </div>
+  </div>
 </div>
 
 <!-- Auth Overlay -->
@@ -389,6 +459,7 @@
       <div class="user-bar" id="userBar" style="display:none">
         <span class="save-indicator" id="saveIndicator">Saved</span>
         <span class="user-name" id="userDisplayName"></span>
+        <button class="admin-refresh" onclick="openAdmin()" style="font-size:0.72rem">Admin</button>
         <button class="btn-logout" onclick="doLogout()">Sign Out</button>
       </div>
       <div class="status">
@@ -2069,6 +2140,110 @@ function exportCSV() {
 }
 function exportJSON() { if (!lastAnalysisData) return; _download(JSON.stringify(lastAnalysisData, null, 2), `portfolio_${new Date().toISOString().slice(0,10)}.json`, 'application/json'); }
 function _download(c, f, t) { const b = new Blob([c], { type: t }), u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = f; a.click(); URL.revokeObjectURL(u); }
+
+// ── Admin Panel ──────────────────────────────────────────────
+let _adminData = null;
+let _adminTab = 'users';
+
+function openAdmin() {
+  document.getElementById('adminOverlay').classList.add('active');
+  loadAdminData();
+}
+function closeAdmin() {
+  document.getElementById('adminOverlay').classList.remove('active');
+}
+
+async function loadAdminData() {
+  const content = document.getElementById('adminContent');
+  content.innerHTML = '<div class="loader">Loading database</div>';
+  try {
+    const r = await fetch('/api/db/admin/overview');
+    if (!r.ok) throw new Error('Failed to load');
+    _adminData = await r.json();
+    renderAdminStats();
+    renderAdminTable(_adminTab);
+  } catch (e) {
+    content.innerHTML = `<p style="color:var(--red)">Error: ${e.message}</p>`;
+  }
+}
+
+function renderAdminStats() {
+  if (!_adminData) return;
+  const s = _adminData.stats;
+  document.getElementById('adminStats').innerHTML = [
+    { label: 'Users', value: s.users },
+    { label: 'Portfolios', value: s.portfolios },
+    { label: 'Holdings', value: s.holdings },
+    { label: 'Snapshots', value: s.snapshots },
+    { label: 'Trades', value: s.trades },
+    { label: 'Watchlist', value: s.watchlist },
+    { label: 'Alerts', value: s.alerts },
+    { label: 'Audit Events', value: s.audit_events },
+  ].map(x => `<div class="admin-stat"><div class="a-label">${x.label}</div><div class="a-value">${x.value}</div></div>`).join('');
+}
+
+function switchAdminTab(tab) {
+  _adminTab = tab;
+  document.querySelectorAll('.admin-tab').forEach(t =>
+    t.classList.toggle('active', t.textContent.toLowerCase().replace(' ', '') === tab || t.textContent.toLowerCase().replace(' log', '') === tab)
+  );
+  // Fix active state by matching content
+  const tabs = document.querySelectorAll('.admin-tab');
+  const tabMap = ['users', 'portfolios', 'holdings', 'snapshots', 'trades', 'watchlist', 'alerts', 'audit'];
+  tabs.forEach((t, i) => t.classList.toggle('active', tabMap[i] === tab));
+  renderAdminTable(tab);
+}
+
+function renderAdminTable(tab) {
+  if (!_adminData) return;
+  const content = document.getElementById('adminContent');
+  const rows = _adminData[tab] || [];
+
+  if (!rows.length) {
+    content.innerHTML = '<p style="color:var(--muted);padding:20px 0">No data in this table yet.</p>';
+    return;
+  }
+
+  const columns = Object.keys(rows[0]);
+  const th = columns.map(c => `<th>${c.replace(/_/g, ' ')}</th>`).join('');
+  const tbody = rows.map(r => {
+    const tds = columns.map(c => {
+      let v = r[c];
+      if (v === null || v === undefined) return '<td style="color:var(--muted)">-</td>';
+      if (typeof v === 'boolean') return `<td>${v ? '<span style="color:var(--green)">Yes</span>' : '<span style="color:var(--red)">No</span>'}</td>`;
+      // Format timestamps
+      if (typeof v === 'string' && v.match(/^\d{4}-\d{2}-\d{2}T/)) {
+        v = v.replace('T', ' ').slice(0, 19);
+      }
+      // Format numbers
+      if (typeof v === 'number' && !Number.isInteger(v)) {
+        v = v.toFixed(4);
+      }
+      // Format large share counts
+      if (c === 'shares' && typeof v === 'number') {
+        v = v.toLocaleString();
+      }
+      if (c === 'total_value' && v) {
+        v = '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      if (c === 'avg_cost' && v) {
+        v = '$' + Number(v).toFixed(2);
+      }
+      if (c === 'target_price' && v) {
+        v = '$' + Number(v).toFixed(2);
+      }
+      if (c === 'price' && v) {
+        v = '$' + Number(v).toFixed(2);
+      }
+      return `<td>${v}</td>`;
+    }).join('');
+    return `<tr>${tds}</tr>`;
+  }).join('');
+
+  content.innerHTML = `
+    <div style="font-size:0.72rem;color:var(--muted);margin-bottom:8px">${rows.length} record${rows.length !== 1 ? 's' : ''}</div>
+    <table><thead><tr>${th}</tr></thead><tbody>${tbody}</tbody></table>`;
+}
 </script>
 </body>
 </html>

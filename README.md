@@ -111,6 +111,21 @@ This is a collaborative group project. Both contributors are co-creators.
 - Correlation heatmap with average off-diagonal interpretation
 - Warnings banner merging backend warnings with stale price detection
 
+### Database Persistence Layer
+
+- **SQLAlchemy ORM** with 8 models: User, Portfolio, Holding, AnalysisSnapshot, TradeJournal, Watchlist, Alert, AuditLog
+- **Multi-backend support**: SQLite (default, zero-config), MySQL, PostgreSQL — configured via `DATABASE_URL` or individual env vars
+- **Connection pooling** (pool_size=10, max_overflow=20, pool_recycle=3600, pool_pre_ping=True) for production databases
+- **User authentication** with session persistence (login, register, guest mode)
+- **Portfolio auto-save**: holdings automatically synced to database on analysis
+- **Auto-snapshot**: every analysis run saves a full analytics snapshot for historical tracking
+- **Weighted-average cost basis** merge when adding duplicate symbols
+- **Audit logging** on every write operation for full traceability
+- **Admin dashboard** with tabbed view of all 8 database tables and aggregate stats
+- **30 REST endpoints** under `/api/db/` for full CRUD on all entities
+- **Trade journal** for recording executed, simulated, and rebalance trades
+- **Watchlist and alerts** with configurable metric thresholds (price, Sharpe, beta, volatility, VaR, RSI)
+
 ### Infrastructure
 
 - **CPI year-over-year fix**: fetches 16 months from FRED and uses date-matching (within 45-day tolerance) to handle missing observations
@@ -135,7 +150,7 @@ Google Colab (T4 GPU)                          FRED API
   +-----------------------------------------------------------+
   |  FastAPI Backend (backend/)                               |
   |                                                           |
-  |  app.py ................. API server, 15 endpoints        |
+  |  app.py ................. API server, 45 endpoints        |
   |  portfolio.py ........... Core analytics engine           |
   |  advanced_analytics.py .. Monte Carlo, Frontier, Stress,  |
   |                           What-If, Regime, Data Quality   |
@@ -144,19 +159,26 @@ Google Colab (T4 GPU)                          FRED API
   |  options_math.py ........ Black-Scholes + Greeks          |
   |  cache.py ............... In-memory TTL cache             |
   |  model_client.py ........ FinGPT Colab bridge             |
+  |  database/ .............. SQLAlchemy ORM persistence      |
+  |    engine.py ............ Connection pooling, multi-DB    |
+  |    models.py ............ 8 ORM models (User, Portfolio,  |
+  |                           Holding, Snapshot, Trade, etc.) |
+  |    crud.py .............. 35+ CRUD functions + audit log  |
+  |    schemas.py ........... Pydantic request/response DTOs  |
   +-----------------------------------------------------------+
-         |
-         | Serves HTML + JSON API on port 8000
-         v
-  +-----------------------------------------------------------+
-  |  Single-Page Dashboard (frontend/static/index.html)       |
-  |                                                           |
-  |  20 analytics panels with sticky navigation               |
-  |  Plotly.js ... Candlestick, Monte Carlo, Heatmaps,        |
-  |               Frontier, Regime Vol Chart                  |
-  |  Chart.js .... Allocation doughnut                        |
-  |  Info Modals . Educational docs on every section          |
-  +-----------------------------------------------------------+
+         |                            |
+         | HTML + JSON API :8000      | SQLAlchemy
+         v                            v
+  +---------------------------+  +---------------------------+
+  |  Single-Page Dashboard    |  |  Database                 |
+  |  (frontend/static/)       |  |  SQLite (default)         |
+  |                           |  |  MySQL / PostgreSQL       |
+  |  20 analytics panels      |  |  8 tables, audit log,     |
+  |  Auth overlay (login/     |  |  auto-snapshots,          |
+  |    register/guest)        |  |  connection pooling       |
+  |  Admin dashboard panel    |  +---------------------------+
+  |  Plotly.js, Chart.js      |
+  +---------------------------+
 ```
 
 ---
@@ -227,12 +249,17 @@ The AI features (FinGPT sentiment per headline, portfolio insight narrative) req
 | 19 | **Regime Risk Engine** | Rolling volatility regime detection with conditional VaR |
 | 20 | **Event Calendar** | Upcoming earnings dates with historical return distributions |
 | 21 | **Data Quality** | Per-ticker completeness, freshness, gaps, and quality score |
+| 22 | **Admin Dashboard** | Tabbed view of all 8 database tables with aggregate stats (click Admin button in header) |
 
 Every section has an **(i)** info button that opens an educational modal explaining the methodology, formulas, inputs, and interpretation.
+
+The app starts with a **login/register overlay** — create an account or continue as guest. Logged-in users get automatic portfolio persistence across sessions.
 
 ---
 
 ## API Endpoints
+
+### Analytics (15 endpoints)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -245,12 +272,38 @@ Every section has an **(i)** info button that opens an educational modal explain
 | `/api/options/{symbol}` | GET | Options chain with Greeks and IV skew |
 | `/api/earnings` | GET | Upcoming earnings dates and historical returns |
 | `/api/holders` | GET | Institutional holders and legendary investor matches |
-| `/api/portfolio/analyze` | POST | Full portfolio analysis (all analytics) |
+| `/api/portfolio/analyze` | POST | Full portfolio analysis (auto-saves snapshot if user logged in) |
 | `/api/whatif` | POST | What-if trade simulation with metric deltas |
 | `/api/regime` | POST | Regime detection and conditional VaR |
 | `/api/data-quality` | POST | Per-ticker data quality report |
 | `/api/model/analyze` | POST | Direct FinGPT access (sentiment/headline/insight) |
 | `/api/cache/clear` | POST | Clear the in-memory data cache |
+
+### Database CRUD (30 endpoints)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/db/register` | POST | Create new user account |
+| `/api/db/login` | POST | Authenticate and get user + default portfolio |
+| `/api/db/users/{id}` | GET/PUT | Get or update user profile |
+| `/api/db/users/{id}/dashboard` | GET | User dashboard stats (holdings, trades, snapshots) |
+| `/api/db/portfolios` | POST | Create a new portfolio |
+| `/api/db/portfolios/{id}` | GET/PUT/DELETE | Portfolio CRUD |
+| `/api/db/users/{id}/portfolios` | GET | List user's portfolios |
+| `/api/db/portfolios/{id}/holdings` | GET/POST | List or add holdings (auto-merges duplicates) |
+| `/api/db/holdings/{id}` | PUT/DELETE | Update or remove a holding |
+| `/api/db/portfolios/{id}/snapshots` | GET | Paginated analysis snapshot history |
+| `/api/db/snapshots/{id}` | GET | Full snapshot detail with payload |
+| `/api/db/portfolios/{id}/snapshots/latest` | GET | Most recent snapshot |
+| `/api/db/portfolios/{id}/snapshots/timeseries` | GET | Metric time-series (Sharpe, VaR, etc.) |
+| `/api/db/portfolios/{id}/trades` | GET/POST | Trade journal (record and list trades) |
+| `/api/db/portfolios/{id}/trades/summary` | GET | Trade summary stats |
+| `/api/db/users/{id}/watchlist` | GET/POST | Watchlist management |
+| `/api/db/watchlist/{id}` | PUT/DELETE | Update or remove watchlist item |
+| `/api/db/users/{id}/alerts` | GET/POST | Price/metric alerts |
+| `/api/db/alerts/{id}` | PUT/DELETE | Update or remove alert |
+| `/api/db/users/{id}/activity` | GET | Recent audit log entries |
+| `/api/db/admin/overview` | GET | All tables with stats (admin dashboard) |
 
 Full interactive API docs available at **http://localhost:8000/docs** (Swagger UI).
 
@@ -334,7 +387,7 @@ Portfolio loss = `portfolio_beta * market_drop`. Reverse stress test: `market_dr
 ```
 fingpt-portfolio/
 ├── backend/
-│   ├── app.py                 # FastAPI server, 15 API endpoints, request routing
+│   ├── app.py                 # FastAPI server, 45 API endpoints, request routing
 │   ├── portfolio.py           # Core analytics: returns, volatility, beta, alpha,
 │   │                          #   Sharpe, Sortino, Treynor, Calmar, RSI, tax, tariff
 │   ├── advanced_analytics.py  # Monte Carlo VaR, Efficient Frontier, Correlation,
@@ -345,16 +398,24 @@ fingpt-portfolio/
 │   │                          #   (macro indicators, CPI YoY), SEC EDGAR client
 │   ├── options_math.py        # Black-Scholes pricing and Greeks
 │   ├── cache.py               # In-memory TTL cache (no external dependencies)
-│   └── model_client.py        # Async HTTP bridge to FinGPT Colab server
+│   ├── model_client.py        # Async HTTP bridge to FinGPT Colab server
+│   └── database/              # SQLAlchemy persistence layer
+│       ├── __init__.py        # Package exports
+│       ├── engine.py          # Connection pooling, multi-backend (SQLite/MySQL/PG)
+│       ├── models.py          # 8 ORM models with UUID PKs, UTC timestamps
+│       ├── crud.py            # 35+ CRUD functions with automatic audit logging
+│       └── schemas.py         # 22 Pydantic request/response DTOs
 ├── frontend/
 │   └── static/
-│       └── index.html         # Single-page dashboard (~1500 lines)
-│                              #   Plotly.js, Chart.js, 20 panels, nav bar
+│       └── index.html         # Single-page dashboard (~1800 lines)
+│                              #   Plotly.js, Chart.js, 22 panels, auth overlay,
+│                              #   admin dashboard, nav bar
 ├── colab/
 │   └── fingpt_server.ipynb    # Llama-2-7B + FinGPT LoRA on Colab T4 GPU
 ├── config/
-│   ├── .env.example           # Template with placeholder keys
+│   ├── .env.example           # Template with placeholder keys + DB config
 │   └── .env                   # Your secrets (git-ignored)
+├── data/                      # SQLite database file (git-ignored)
 ├── tests/
 │   └── test_spec_validation.py  # Validation tests for math correctness
 ├── requirements.txt
@@ -373,10 +434,33 @@ fingpt-portfolio/
 
 ---
 
+## Database
+
+FinGPT uses **SQLite by default** — zero configuration, the database file is created automatically at `data/fingpt.db` on first run.
+
+For production deployments, configure MySQL or PostgreSQL via `config/.env`:
+
+```bash
+# Option 1: Full connection URL
+DATABASE_URL=mysql+pymysql://user:password@host:3306/fingpt
+
+# Option 2: Individual variables
+DB_HOST=localhost
+DB_USER=your_user
+DB_PASSWORD=your_password
+DB_NAME=fingpt
+DB_PORT=3306
+DB_DRIVER=mysql+pymysql
+```
+
+The database is **completely optional** — guest mode works without it, and all analytics run without persistence.
+
+---
+
 ## Requirements
 
 - Python 3.9+
-- Dependencies: `fastapi`, `uvicorn`, `httpx`, `pandas`, `numpy`, `yfinance`, `scipy`, `PyPortfolioOpt`
+- Dependencies: `fastapi`, `uvicorn`, `httpx`, `pandas`, `numpy`, `yfinance`, `scipy`, `PyPortfolioOpt`, `SQLAlchemy`, `PyMySQL`
 - Browser: Any modern browser (Chrome, Firefox, Safari, Edge)
 - Optional: Google Colab account with T4 GPU access (free tier works) for AI features
 
