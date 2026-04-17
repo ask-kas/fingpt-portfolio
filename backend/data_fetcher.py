@@ -132,6 +132,122 @@ class YFinanceClient:
 
         return rows
 
+    # ── Intraday / minute bars ───────────────────────────────
+    #
+    # yfinance intraday interval limits (Yahoo enforces these):
+    #   1m   → max 7 days of history, 7d per request
+    #   2m   → max 60 days, 60d per request
+    #   5m   → max 60 days, 60d per request
+    #   15m  → max 60 days, 60d per request
+    #   30m  → max 60 days, 60d per request
+    #   60m  → max 730 days, 60d per request
+    #   90m  → max 60 days
+    #   1h   → max 730 days, 60d per request
+    #
+    # We pick a sensible default period per interval so callers can just
+    # say "give me 1-minute bars" without hitting Yahoo's constraints.
+    _INTRADAY_VALID_INTERVALS = {
+        "1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"
+    }
+    _INTRADAY_DEFAULT_PERIOD = {
+        "1m": "1d",
+        "2m": "5d",
+        "5m": "5d",
+        "15m": "5d",
+        "30m": "1mo",
+        "60m": "3mo",
+        "90m": "60d",
+        "1h": "3mo",
+    }
+    _INTRADAY_MAX_PERIOD = {
+        "1m": "7d",
+        "2m": "60d",
+        "5m": "60d",
+        "15m": "60d",
+        "30m": "60d",
+        "60m": "2y",
+        "90m": "60d",
+        "1h": "2y",
+    }
+
+    def _get_intraday_sync(
+        self,
+        symbol: str,
+        interval: str = "1m",
+        period: str | None = None,
+        prepost: bool = False,
+    ) -> list[dict]:
+        """Fetch intraday OHLCV bars from yfinance.
+
+        Returns a list of rows, newest first. Each row carries a UTC
+        ISO-8601 timestamp plus OHLCV. Freshness metadata (fetched_at,
+        age_seconds, is_stale) is attached to the first row.
+
+        The staleness threshold scales with interval: a 1-minute bar is
+        stale after ~5 min for stocks; crypto trades 24/7 so we tolerate
+        slightly longer gaps. Outside of market hours stocks will always
+        be "stale" relative to wall-clock, which is the correct signal.
+        """
+        interval = (interval or "1m").lower()
+        if interval not in self._INTRADAY_VALID_INTERVALS:
+            raise ValueError(
+                f"Invalid interval '{interval}'. Valid: "
+                f"{sorted(self._INTRADAY_VALID_INTERVALS)}"
+            )
+
+        if period is None:
+            period = self._INTRADAY_DEFAULT_PERIOD[interval]
+
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period=period, interval=interval, prepost=prepost)
+
+        if hist.empty:
+            return []
+
+        rows = []
+        for ts, row in hist.iterrows():
+            # yfinance returns tz-aware timestamps; normalise to UTC.
+            try:
+                if ts.tzinfo is None:
+                    ts_utc = ts.tz_localize("UTC")
+                else:
+                    ts_utc = ts.tz_convert("UTC")
+            except Exception:
+                ts_utc = ts
+            rows.append({
+                "timestamp": ts_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "open": round(float(row["Open"]), 4),
+                "high": round(float(row["High"]), 4),
+                "low": round(float(row["Low"]), 4),
+                "close": round(float(row["Close"]), 4),
+                "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
+            })
+
+        rows.reverse()  # newest first
+
+        # Freshness metadata on the newest bar.
+        if rows:
+            fetched_at = datetime.now(timezone.utc)
+            try:
+                latest = datetime.strptime(rows[0]["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                age_seconds = int((fetched_at - latest).total_seconds())
+            except Exception:
+                age_seconds = 0
+            rows[0]["fetched_at"] = fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            rows[0]["age_seconds"] = age_seconds
+            # Stale threshold: 3× the interval length for stocks,
+            # 2× for crypto (trades continuously). Baseline interval in sec:
+            interval_seconds = {
+                "1m": 60, "2m": 120, "5m": 300, "15m": 900, "30m": 1800,
+                "60m": 3600, "90m": 5400, "1h": 3600,
+            }.get(interval, 60)
+            is_crypto = "-USD" in symbol.upper()
+            threshold = interval_seconds * (2 if is_crypto else 3)
+            rows[0]["is_stale"] = bool(age_seconds > threshold)
+            rows[0]["interval"] = interval
+
+        return rows
+
     def _get_news_sync(self, symbols: list[str], limit: int = 10) -> list[dict]:
         """Fetch news for a set of tickers and deduplicate by URL fingerprint.
 
@@ -248,6 +364,39 @@ class YFinanceClient:
             return result
         except Exception as e:
             logger.error("Failed to fetch daily data for %s: %s", symbol, e)
+            return []
+
+    async def get_intraday(
+        self,
+        symbol: str,
+        interval: str = "1m",
+        period: str | None = None,
+        prepost: bool = False,
+    ) -> list[dict]:
+        """Get intraday OHLCV bars at the requested interval.
+
+        TTL scales with the bar interval — no point caching a 1-minute
+        bar for an hour. 1m → 30s, 5m → 2min, anything larger → 5min.
+        """
+        interval = (interval or "1m").lower()
+        period_key = period or "default"
+        cache_key = f"intraday:{symbol}:{interval}:{period_key}:{int(bool(prepost))}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            result = await _run_sync(
+                self._get_intraday_sync, symbol, interval, period, prepost
+            )
+            if result:
+                ttl = 30 if interval == "1m" else 120 if interval in ("2m", "5m") else 300
+                cache.set(cache_key, result, ttl_seconds=ttl)
+            return result
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error("Failed to fetch intraday data for %s (%s): %s", symbol, interval, e)
             return []
 
     async def get_news(self, symbols: list[str], limit: int = 10) -> list[dict]:

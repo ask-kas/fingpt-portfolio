@@ -139,6 +139,33 @@ async def get_daily(symbol: str, days: int = 100):
     return result
 
 
+@app.get("/api/intraday/{symbol}")
+async def get_intraday(
+    symbol: str,
+    interval: str = "1m",
+    period: str | None = None,
+    prepost: bool = False,
+):
+    """Get intraday OHLCV bars for a symbol.
+
+    Query parameters:
+      interval: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h (default: 1m)
+      period:   window to fetch. Defaults are interval-aware:
+                1m → 1d, 5m → 5d, 30m → 1mo, 1h → 3mo.
+                Yahoo caps 1m at 7d and most others at 60d.
+      prepost:  include pre/post-market bars (default: false)
+    """
+    try:
+        result = await yf_client.get_intraday(
+            symbol.upper(), interval=interval, period=period, prepost=prepost
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not result:
+        raise HTTPException(404, f"No intraday data found for {symbol.upper()} ({interval})")
+    return result
+
+
 @app.get("/api/news")
 async def get_news(tickers: str = "AAPL", limit: int = 10):
     """Get financial news for given tickers (comma-separated)."""

@@ -609,6 +609,40 @@
         <div id="candleChart" class="plotly-chart"></div>
       </div>
 
+      <!-- Intraday / Minute Bars -->
+      <div class="panel full-width" id="intradayPanel" data-section="sectionCharts" style="display:none">
+        <h2><span class="section-badge"></span> Intraday Tape <span class="info-btn" onclick="showInfo('intraday')">i</span></h2>
+        <p style="font-size:0.72rem;color:var(--muted);margin-bottom:10px">
+          Minute-resolution OHLCV direct from Yahoo. 1m bars cover the last trading day, 5m covers a week, 30m/1h stretch to a quarter.
+        </p>
+        <div class="candle-tabs" id="intradayTabs" style="margin-bottom:10px"></div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">
+          <input id="intradaySymbolInput" type="text" placeholder="Custom symbol (e.g. BTC-USD)"
+                 style="padding:6px 10px;background:var(--surface);border:1px solid var(--border);
+                        border-radius:4px;color:var(--text);font-size:0.78rem;width:220px"
+                 onkeydown="if(event.key==='Enter'){loadIntradaySymbol(this.value)}">
+          <select id="intradayInterval"
+                  style="padding:6px 10px;background:var(--surface);border:1px solid var(--border);
+                         border-radius:4px;color:var(--text);font-size:0.78rem"
+                  onchange="refreshIntraday()">
+            <option value="1m">1 min</option>
+            <option value="2m">2 min</option>
+            <option value="5m" selected>5 min</option>
+            <option value="15m">15 min</option>
+            <option value="30m">30 min</option>
+            <option value="60m">1 hour</option>
+          </select>
+          <button onclick="refreshIntraday()"
+                  style="padding:6px 14px;background:var(--accent);color:var(--bg);border:none;
+                         border-radius:4px;font-size:0.78rem;font-weight:600;cursor:pointer">
+            Refresh
+          </button>
+        </div>
+        <div id="intradayStatus" style="font-family:var(--mono, monospace);font-size:10px;
+             color:rgba(255,255,255,0.55);margin-bottom:8px">Ready.</div>
+        <div id="intradayChart" style="width:100%;height:480px"></div>
+      </div>
+
       <!-- Monte Carlo -->
       <div class="panel full-width" id="monteCarloPanel" data-section="sectionRisk" style="display:none">
         <h2><span class="section-badge"></span> Risk Analysis — Monte Carlo VaR <span class="info-btn" onclick="showInfo('montecarlo')">i</span></h2>
@@ -804,6 +838,13 @@ const INFO = {
     method: '<b>Candlestick</b><br>Each bar encodes open, high, low, close for one trading day. Green means close greater than open, red means close below open, wicks show the intraday range.<br><br><b>SMA 20 and SMA 50</b><br>Rolling simple averages of the close price over the trailing 20 and 50 bars. A bullish golden cross occurs when the 20 crosses above the 50.',
     why: 'Tables of numbers compress out a lot of information. A candlestick immediately shows whether a move is trending or mean reverting, whether volume is confirming, and how far price has travelled relative to its moving average anchors.',
     tags: ['OHLC', 'Candlestick', 'SMA 20', 'SMA 50', 'Plotly'],
+  },
+  intraday: {
+    title: 'Intraday Tape',
+    what: 'Minute-resolution OHLCV bars pulled live from Yahoo Finance. Switch between 1m, 2m, 5m, 15m, 30m, and 1h granularities. Includes a volume pane and a freshness status line showing the age of the newest bar.',
+    method: '<b>Source</b><br>yfinance Ticker.history(period, interval, prepost=False). Yahoo enforces its own windows: 1m tops out at 7 days, other intraday bars go out to 60 days, hourly extends further.<br><br><b>Staleness</b><br>Backend tags the newest bar with age in seconds and a boolean is_stale. Threshold is 3x the bar interval for stocks, 2x for crypto which trades 24/7. Outside market hours a stock will always be stale, which is the correct signal.<br><br><b>Caching</b><br>1m bars: 30s TTL. 2-5m: 2min TTL. Coarser intervals: 5min TTL.',
+    why: 'Daily bars hide execution reality. A 3% daily move could have been a slow grind or a panic at 15:45 on heavy volume — minute bars tell you which. For traders the intraday tape is also where you look for liquidity pockets, opening-range breakouts, and the shape of end-of-day auction flow.',
+    tags: ['Intraday', '1-minute', 'OHLCV', 'yfinance', 'Live tape'],
   },
   montecarlo: {
     title: 'Monte Carlo VaR',
@@ -1440,6 +1481,9 @@ function renderResults(data) {
   // Candlestick charts
   renderCandlesticks(analytics.holdings.filter(h => !h.error));
 
+  // Intraday tape
+  renderIntradayTabs(analytics.holdings.filter(h => !h.error));
+
   // Allocation
   renderAllocationChart(analytics.holdings.filter(h => !h.error && h.position_value > 0));
 
@@ -2027,6 +2071,134 @@ async function selectCandle(idx) {
       showlegend: true,
     }, PLOTLY_CONFIG);
   } catch (e) { console.error('Candle fetch error:', e); }
+}
+
+// ── Intraday / Minute Tape ─────────────────────────────────
+function renderIntradayTabs(holdingsList) {
+  const p = document.getElementById('intradayPanel');
+  if (!holdingsList || holdingsList.length === 0) { p.style.display = 'none'; return; }
+  p.style.display = 'block';
+  const tabs = document.getElementById('intradayTabs');
+  window._intradaySymbols = holdingsList.map(h => h.symbol);
+  tabs.innerHTML = holdingsList.map((h, i) =>
+    `<div class="candle-tab ${i === 0 ? 'active' : ''}" onclick="selectIntraday(${i})">${h.symbol}</div>`
+  ).join('');
+  selectIntraday(0);
+}
+
+async function selectIntraday(idx) {
+  document.querySelectorAll('#intradayTabs .candle-tab').forEach((t, i) => t.classList.toggle('active', i === idx));
+  const sym = window._intradaySymbols[idx];
+  window._intradayActive = sym;
+  document.getElementById('intradaySymbolInput').value = sym;
+  await loadIntradayChart(sym);
+}
+
+async function loadIntradaySymbol(sym) {
+  sym = (sym || '').trim().toUpperCase();
+  if (!sym) return;
+  window._intradayActive = sym;
+  await loadIntradayChart(sym);
+}
+
+async function refreshIntraday() {
+  const sym = window._intradayActive || document.getElementById('intradaySymbolInput').value.trim().toUpperCase();
+  if (!sym) return;
+  await loadIntradayChart(sym);
+}
+
+async function loadIntradayChart(sym) {
+  const interval = document.getElementById('intradayInterval').value;
+  const status = document.getElementById('intradayStatus');
+  status.textContent = `Fetching ${sym} ${interval} bars...`;
+  try {
+    const r = await fetch(`/api/intraday/${encodeURIComponent(sym)}?interval=${interval}`);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      status.textContent = `Error: ${err.detail || r.statusText}`;
+      Plotly.purge('intradayChart');
+      return;
+    }
+    const data = await r.json();
+    if (!data || data.length === 0) {
+      status.textContent = 'No intraday data returned.';
+      Plotly.purge('intradayChart');
+      return;
+    }
+
+    // Data is newest-first; reverse for chronological plotting.
+    const rows = data.slice().reverse();
+    const x = rows.map(r => r.timestamp);
+    const opens = rows.map(r => r.open);
+    const highs = rows.map(r => r.high);
+    const lows = rows.map(r => r.low);
+    const closes = rows.map(r => r.close);
+    const volumes = rows.map(r => r.volume);
+
+    // Freshness line (metadata lives on the newest bar).
+    const newest = data[0];
+    const fresh = newest.is_stale ? 'STALE' : 'live';
+    const ageStr = newest.age_seconds < 120
+      ? `${newest.age_seconds}s`
+      : `${Math.round(newest.age_seconds / 60)}m`;
+    status.innerHTML = `${sym} ${interval} · ${data.length} bars · newest ${newest.timestamp} ` +
+      `<span style="color:${newest.is_stale ? 'var(--risk, #E05252)' : 'var(--accent, #2DB87A)'}">[${fresh} · age ${ageStr}]</span>`;
+
+    // Format timestamps as short "MM-DD HH:MM" labels so the x-axis
+    // is readable and category-based (no overnight gaps). For 1m on a
+    // single session this renders 390 equally-spaced candles at full width.
+    const xLabels = rows.map(r => {
+      const t = r.timestamp;  // "2026-04-16T19:59:00Z"
+      return t.slice(5, 10) + ' ' + t.slice(11, 16);
+    });
+
+    Plotly.newPlot('intradayChart', [
+      {
+        type: 'candlestick',
+        x: xLabels,
+        open: opens, high: highs, low: lows, close: closes,
+        name: sym,
+        increasing: { line: { color: '#34d399' } },
+        decreasing: { line: { color: '#f87171' } },
+        yaxis: 'y',
+      },
+      {
+        type: 'bar',
+        x: xLabels,
+        y: volumes,
+        name: 'Volume',
+        marker: { color: 'rgba(45, 184, 122, 0.45)' },
+        yaxis: 'y2',
+      },
+    ], {
+      ...PLOTLY_LAYOUT,
+      xaxis: {
+        ...PLOTLY_LAYOUT.xaxis,
+        rangeslider: { visible: false },
+        type: 'category',
+        nticks: 10,
+        tickangle: -30,
+      },
+      yaxis: {
+        ...PLOTLY_LAYOUT.yaxis,
+        title: 'Price ($)',
+        domain: [0.28, 1],
+        autorange: true,
+      },
+      yaxis2: {
+        ...PLOTLY_LAYOUT.yaxis,
+        title: 'Volume',
+        domain: [0, 0.22],
+        showgrid: false,
+      },
+      legend: { font: { size: 10 }, bgcolor: 'rgba(0,0,0,0)', x: 0, y: 1.08, orientation: 'h' },
+      showlegend: true,
+      margin: { l: 60, r: 20, t: 40, b: 50 },
+    }, PLOTLY_CONFIG);
+  } catch (e) {
+    console.error('Intraday fetch error:', e);
+    status.textContent = `Error: ${e.message}`;
+  }
 }
 
 // ── Monte Carlo ────────────────────────────────────────────
