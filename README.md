@@ -60,6 +60,39 @@ Built with a FastAPI backend, vanilla JavaScript frontend, SQLAlchemy persistenc
 - **Interval-tuned caching**: 30s TTL for 1m, 120s for 2–5m, 300s for coarser bars
 - Per-holding tabs plus free-text symbol input (works for stocks, crypto like `BTC-USD`, indices)
 
+### Prediction Markets
+
+- **Dual-exchange integration**: Polymarket and Kalshi markets in a unified feed
+- **Historical price charts** via Polymarket CLOB API and Kalshi candlestick endpoints
+- **Cross-platform arbitrage scanner** using Bellman-Ford algorithm for multi-hop opportunity detection across 500+ Polymarket and 350+ Kalshi markets
+- **Relevance scoring** with finance keyword matching and meme/novelty filtering to surface actionable markets
+- **My Bets portfolio tracker** with P&L, average entry, and outcome tracking
+- **Side-by-side view** for comparing Polymarket vs Kalshi pricing on matched events
+- **Calibration curve** from 500 resolved Polymarket markets with Brier score accuracy metric
+- **Cross-market dependency correlation graph** linking related prediction markets
+- **AI prediction market analysis** synthesizing trends from both exchanges
+- **Smart money detection** identifying volume spikes with configurable sensitivity
+
+### Trading Tools
+
+- **EV Calculator** for binary prediction markets with implied probability
+- **Kelly Criterion** optimal bet sizing with fractional Kelly slider
+- **Arbitrage scanner** with live spread detection across both exchanges
+- **Smart money volume spike detection** with configurable thresholds
+
+### Learning Mode
+
+- **9-stage gamified learning system** with 56 lessons and 34 quizzes covering investing fundamentals through advanced analytics
+- **Duolingo-style vertical skill tree** with custom SVG icons for each stage
+- **XP system** with 5 ranks (Novice, Apprentice, Analyst, Strategist, Portfolio Master) and 9 achievement badges
+- **Tool locking/unlocking** gating 25 dashboard panels behind learning progress
+- **55 YouTube videos** and **38 Investopedia articles** as learning resources
+- **Quiz passing mark** at 70% with retry and per-question feedback
+- **Badge cabinet** with earned and locked achievement display
+- **Streak tracking** with daily login detection
+- **Confetti unlock ceremonies** on stage completion and badge earn
+- **Admin bypass** (shihanmahfuz) and **tester mode** (abdullah)
+
 ### Options Chain with Black-Scholes Greeks
 
 - Full Black-Scholes pricing with **delta, gamma, theta, vega, rho**
@@ -97,6 +130,19 @@ Built with a FastAPI backend, vanilla JavaScript frontend, SQLAlchemy persistenc
 
 - Per-ticker quality assessment with composite quality score (0-100)
 
+### Portfolio Rebalancing
+
+- **Wealthfront-inspired rebalancing suggestions** comparing current vs target allocations
+- **AI news digest** for portfolio holdings with per-ticker summary and sentiment
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+K` / `Ctrl+K` | Open command palette |
+
+The **command palette** (Linear-inspired) provides fuzzy search across all dashboard panels, actions, and navigation targets.
+
 ### Database Persistence Layer
 
 - **SQLAlchemy ORM** with 8 models: User, Portfolio, Holding, AnalysisSnapshot, TradeJournal, Watchlist, Alert, AuditLog
@@ -112,30 +158,30 @@ Built with a FastAPI backend, vanilla JavaScript frontend, SQLAlchemy persistenc
 ## Architecture
 
 ```
-Google Colab (T4 GPU)                          FRED API
-  Llama-2-7B + FinGPT LoRA                    (macro data)
-  4-bit NF4 quantized                              |
-  Exposed via ngrok tunnel                          |
-         |                                          |
-         | HTTP                                     |
-         v                                          v
-  +-----------------------------------------------------------+
-  |  FastAPI Backend (backend/)                               |
-  |                                                           |
-  |  app.py ................. API server, 45 endpoints        |
-  |  portfolio.py ........... Core analytics engine           |
-  |  advanced_analytics.py .. Monte Carlo, Frontier, Stress,  |
-  |                           What-If, Regime, Data Quality   |
-  |  data_fetcher.py ........ yfinance, FRED, SEC EDGAR       |
-  |  options_math.py ........ Black-Scholes + Greeks          |
-  |  cache.py ............... In-memory TTL cache             |
-  |  model_client.py ........ Colab LLM bridge               |
-  |  database/ .............. SQLAlchemy ORM persistence      |
-  |    engine.py ............ Connection pooling, multi-DB    |
-  |    models.py ............ 8 ORM models                    |
-  |    crud.py .............. 35+ CRUD functions + audit log  |
-  |    schemas.py ........... Pydantic request/response DTOs  |
-  +-----------------------------------------------------------+
+Google Colab (T4 GPU)          FRED API         Polymarket API     Kalshi API
+  Llama-2-7B + FinGPT LoRA   (macro data)      (CLOB + Gamma)     (REST v2)
+  4-bit NF4 quantized             |                   |                |
+  Exposed via ngrok tunnel        |                   |                |
+         |                        |                   |                |
+         | HTTP                   |                   |                |
+         v                        v                   v                v
+  +------------------------------------------------------------------------+
+  |  FastAPI Backend (backend/)                                            |
+  |                                                                        |
+  |  app.py ................. API server, 57 endpoints                     |
+  |  portfolio.py ........... Core analytics engine                        |
+  |  advanced_analytics.py .. Monte Carlo, Frontier, Stress, What-If,      |
+  |                           Regime, Data Quality, Arbitrage              |
+  |  data_fetcher.py ........ yfinance, FRED, SEC, Polymarket, Kalshi      |
+  |  options_math.py ........ Black-Scholes + Greeks                       |
+  |  cache.py ............... Thread-safe in-memory TTL cache              |
+  |  model_client.py ........ Colab LLM bridge                            |
+  |  database/ .............. SQLAlchemy ORM persistence                   |
+  |    engine.py ............ Connection pooling, multi-DB                 |
+  |    models.py ............ 8 ORM models                                 |
+  |    crud.py .............. 35+ CRUD functions + audit log               |
+  |    schemas.py ........... Pydantic request/response DTOs               |
+  +------------------------------------------------------------------------+
          |                            |
          | HTML + JSON API :8000      | SQLAlchemy
          v                            v
@@ -143,10 +189,11 @@ Google Colab (T4 GPU)                          FRED API
   |  Veris Dashboard          |  |  Database                 |
   |  (frontend/static/)       |  |  SQLite (default)         |
   |                           |  |  MySQL / PostgreSQL       |
-  |  22 analytics panels      |  |  8 tables, audit log,     |
+  |  33 panels + Learning     |  |  8 tables, audit log,     |
   |  Auth overlay             |  |  auto-snapshots,          |
-  |  Admin dashboard          |  |  connection pooling       |
-  |  Plotly.js, Chart.js      |  +---------------------------+
+  |  Cmd+K command palette    |  |  connection pooling       |
+  |  Admin dashboard          |  +---------------------------+
+  |  Plotly.js, Chart.js      |
   +---------------------------+
 ```
 
@@ -194,11 +241,11 @@ Open **http://localhost:8000**. Enter your holdings and click "Analyze Portfolio
 | # | Section | Description |
 |---|---------|-------------|
 | 1 | **Portfolio Input** | Enter holdings: symbol, shares, avg cost, dividends per share |
-| 2 | **Portfolio Summary** | 14 metric cards with disclosed methodology |
+| 2 | **Portfolio Summary** | 14 glassmorphism metric cards with disclosed methodology |
 | 3 | **AI Insight** | Citation-backed research from the language model (optional) |
 | 4 | **Holdings Detail** | 16-column table with per-stock metrics. CSV/JSON export |
 | 5 | **Price Charts** | Interactive candlestick charts with SMA overlays |
-| 5b | **Intraday Tape** | Minute-resolution OHLCV candles (1m–1h) with live/stale freshness flag |
+| 5b | **Intraday Tape** | Minute-resolution OHLCV candles (1m-1h) with live/stale freshness flag |
 | 6 | **Monte Carlo VaR** | 10,000 simulated paths, VaR/CVaR, fan chart |
 | 7 | **Efficient Frontier** | Markowitz optimization with current vs optimal weights |
 | 8 | **Correlation Matrix** | Pairwise correlation heatmap |
@@ -216,8 +263,19 @@ Open **http://localhost:8000**. Enter your holdings and click "Analyze Portfolio
 | 20 | **Event Calendar** | Upcoming earnings with historical return distributions |
 | 21 | **Data Quality** | Per-ticker completeness, freshness, and quality score |
 | 22 | **Admin Dashboard** | Credential-protected view of all database tables |
+| 23 | **Prediction Markets** | Polymarket + Kalshi dual-exchange feed with arbitrage scanner |
+| 24 | **My Bets** | Prediction market portfolio tracker with P&L |
+| 25 | **EV Calculator** | Expected value and Kelly Criterion bet sizing |
+| 26 | **Calibration Curve** | Resolved market accuracy with Brier score |
+| 27 | **Market Correlations** | Cross-market dependency graph |
+| 28 | **Smart Money** | Volume spike detection across prediction markets |
+| 29 | **Learning Mode** | 9-stage gamified skill tree with quizzes and XP |
+| 30 | **Badge Cabinet** | Achievement display with unlock criteria |
+| 31 | **Portfolio Rebalancing** | Wealthfront-inspired allocation suggestions |
+| 32 | **AI News Digest** | Per-holding news summary with sentiment |
+| 33 | **Command Palette** | Cmd+K fuzzy search across all panels and actions |
 
-Every metric card discloses its computation parameters. Every info button shows the exact formula.
+Every metric card discloses its computation parameters. Every info button shows the exact formula. Panels 1-22 are available immediately in guest mode; panels gated behind Learning Mode unlock progressively as the user completes stages.
 
 ---
 
@@ -243,6 +301,22 @@ Every metric card discloses its computation parameters. Every info button shows 
 | `/api/data-quality` | POST | Per-ticker data quality report |
 | `/api/model/analyze` | POST | Direct LLM access |
 | `/api/cache/clear` | POST | Clear the in-memory data cache |
+
+### Prediction Markets (11 endpoints)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/polymarket` | GET | Trending Polymarket prediction markets with relevance scoring |
+| `/api/kalshi` | GET | Trending Kalshi prediction events |
+| `/api/polymarket/history/{clob_token_id}` | GET | Price history for a Polymarket outcome token (CLOB API) |
+| `/api/kalshi/history/{ticker}` | GET | Candlestick history for a Kalshi market |
+| `/api/predictions/analysis` | GET | AI analysis of trending prediction markets |
+| `/api/arbitrage` | GET | Cross-platform arbitrage opportunities (Bellman-Ford) |
+| `/api/calibration` | GET | Calibration curve from 500 resolved markets with Brier score |
+| `/api/smart-money` | GET | Volume spike detection across prediction markets |
+| `/api/market-correlations` | GET | Cross-market dependency correlation graph |
+| `/api/news-digest` | POST | AI news digest for portfolio holdings |
+| `/api/rebalance` | POST | Portfolio rebalancing suggestions |
 
 ### Database CRUD (30 endpoints)
 
@@ -287,12 +361,12 @@ The database is completely optional — guest mode works without it.
 ```
 veris/
 ├── backend/
-│   ├── app.py                 # FastAPI server, 45 endpoints
+│   ├── app.py                 # FastAPI server, 57 endpoints
 │   ├── portfolio.py           # Core analytics engine
-│   ├── advanced_analytics.py  # Monte Carlo, Frontier, Stress, Regime
-│   ├── data_fetcher.py        # yfinance, FRED, SEC EDGAR
+│   ├── advanced_analytics.py  # Monte Carlo, Frontier, Stress, Regime, Arbitrage
+│   ├── data_fetcher.py        # yfinance, FRED, SEC, Polymarket, Kalshi
 │   ├── options_math.py        # Black-Scholes pricing and Greeks
-│   ├── cache.py               # In-memory TTL cache
+│   ├── cache.py               # Thread-safe in-memory TTL cache
 │   ├── model_client.py        # Colab LLM bridge
 │   └── database/              # SQLAlchemy persistence layer
 │       ├── engine.py          # Connection pooling, multi-backend
@@ -301,7 +375,7 @@ veris/
 │       └── schemas.py         # 22 Pydantic DTOs
 ├── frontend/
 │   └── static/
-│       └── index.html         # Veris dashboard
+│       └── index.html         # Veris dashboard (33 panels + learning mode)
 ├── colab/
 │   └── fingpt_server.ipynb    # LLM on Colab T4 GPU
 ├── config/

@@ -3,6 +3,7 @@ cache.py — Simple in-memory TTL cache. No external dependencies.
 """
 
 import time
+import threading
 from typing import Any, Optional
 
 
@@ -24,7 +25,8 @@ class TTLCache:
         self._store[key] = (value, time.time() + ttl_seconds)
 
     def clear(self):
-        self._store.clear()
+        with self._lock:
+            self._store.clear()
 
 
 # Module-level singleton

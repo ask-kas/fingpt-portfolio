@@ -4,6 +4,82 @@ All notable changes to Veris — Portfolio Intelligence.
 
 ---
 
+## v3.0.0 (2026-04-29)
+
+Prediction markets, gamified learning, trading tools, and portfolio intelligence upgrades. Veris now covers traditional equities, options, macro, and binary prediction markets in a single dashboard.
+
+### Added
+
+**Prediction Markets** (Shihan Mahfuz)
+- Polymarket + Kalshi dual-exchange integration with unified market feed
+- Historical price charts via Polymarket CLOB API and Kalshi candlestick endpoints
+- Cross-platform arbitrage scanner using Bellman-Ford algorithm for multi-hop opportunity detection
+- Relevance scoring algorithm with finance keyword matching and meme/novelty filtering
+- My Bets portfolio tracker with real-time P&L, average entry price, and outcome tracking
+- Both/side-by-side view mode for comparing Polymarket vs Kalshi pricing on matched events
+- Collapsible prediction markets panel with persistent open/close state
+
+**Trading Tools** (Shihan Mahfuz)
+- EV Calculator for binary prediction markets (expected value with implied probability)
+- Kelly Criterion optimal bet sizing with fractional Kelly slider
+- Arbitrage scanner across 500+ Polymarket and 350+ Kalshi markets with live spread detection
+- Smart money volume spike detection with configurable sensitivity thresholds
+
+**Market Intelligence** (Shihan Mahfuz)
+- Calibration curve built from 500 resolved Polymarket markets with Brier score accuracy metric
+- Cross-market dependency correlation graph linking related prediction markets
+- AI prediction market analysis with trend synthesis from both exchanges
+
+**Portfolio Enhancements** (Shihan Mahfuz)
+- Portfolio rebalancing suggestions inspired by Wealthfront's automated allocation methodology
+- AI news digest for portfolio holdings with per-ticker summary and sentiment
+
+**Learning Mode** (Shihan Mahfuz)
+- 9-stage gamified learning system with 56 lessons and 34 quizzes covering investing fundamentals through advanced analytics
+- Duolingo-style vertical skill tree with custom SVG icons for each stage
+- XP system with 5 ranks (Novice, Apprentice, Analyst, Strategist, Portfolio Master) and 9 achievement badges
+- Tool locking/unlocking system gating 25 dashboard panels behind learning progress
+- 55 embedded YouTube video links and 38 Investopedia article references as learning resources
+- Quiz passing mark at 70% with retry and per-question feedback
+- Badge cabinet displaying earned and locked achievements with unlock criteria
+- Streak tracking with daily login detection and streak multiplier
+- Confetti unlock ceremonies on stage completion and badge earn
+- Admin bypass for user `shihanmahfuz` and tester mode for user `abdullah`
+
+**UX/Frontend** (Shihan Mahfuz)
+- Cmd+K command palette (Linear-inspired) with fuzzy search across all dashboard panels and actions
+- Graduated gray design system replacing flat backgrounds with depth-layered surfaces
+- Glassmorphism metric cards with backdrop blur and subtle border highlights
+- Green Veris favicon (SVG) matching the brand identity
+
+### Fixed
+
+**Bug Fixes** (Shihan Mahfuz)
+- Fixed 8 bugs identified in the initial code audit
+- Fixed what-if simulator allowing sale of non-owned stocks and overselling existing positions
+- Fixed regime detection date misalignment between volatility series and market data
+- Fixed drawdown calculation division by zero when cumulative max is zero
+- Thread-safe cache with locking to prevent race conditions under concurrent requests
+- Variable shadowing fix in `renderResults` where inner `let` masked outer scope
+
+### New API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/polymarket` | GET | Trending Polymarket prediction markets |
+| `/api/kalshi` | GET | Trending Kalshi prediction events |
+| `/api/polymarket/history/{clob_token_id}` | GET | Price history for a Polymarket outcome token |
+| `/api/kalshi/history/{ticker}` | GET | Candlestick history for a Kalshi market |
+| `/api/predictions/analysis` | GET | AI analysis of trending prediction markets |
+| `/api/arbitrage` | GET | Cross-platform arbitrage opportunities |
+| `/api/calibration` | GET | Calibration curve from resolved markets |
+| `/api/smart-money` | GET | Volume spike detection across markets |
+| `/api/market-correlations` | GET | Cross-market dependency correlations |
+| `/api/news-digest` | POST | AI news digest for portfolio holdings |
+| `/api/rebalance` | POST | Portfolio rebalancing suggestions |
+
+---
+
 ## v2.1.0 (2026-04-17)
 
 Minute-resolution intraday data. Veris now covers the full time spectrum from 1-minute ticks to daily bars.

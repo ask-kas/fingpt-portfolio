@@ -45,6 +45,7 @@ from backend.advanced_analytics import (
     what_if_simulation,
     regime_detection,
     data_quality_report,
+    find_arbitrage,
 )
 from backend.database import init_db, get_db, close_db, crud, schemas
 
@@ -82,6 +83,8 @@ model = create_model_client()
 yf_client = clients["yfinance"]
 fred = clients["fred"]
 sec = clients["sec"]
+polymarket = clients["polymarket"]
+kalshi = clients["kalshi"]
 
 
 # ── Request Models ──────────────────────────────────────────
@@ -183,6 +186,225 @@ async def get_macro():
 async def get_filings(ticker: str, filing_type: str = "10-K", count: int = 5):
     """Get SEC filings for a company."""
     return await sec.get_company_filings(ticker.upper(), filing_type, count)
+
+
+@app.get("/api/polymarket")
+async def get_polymarket(limit: int = 20):
+    """Get trending prediction markets from Polymarket."""
+    result = await polymarket.get_trending_markets(limit)
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@app.get("/api/kalshi")
+async def get_kalshi(limit: int = 20):
+    """Get trending prediction events from Kalshi."""
+    result = await kalshi.get_trending_events(limit)
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@app.get("/api/polymarket/history/{clob_token_id}")
+async def get_polymarket_history(clob_token_id: str, interval: str = "max"):
+    """Get price history for a Polymarket outcome token."""
+    if interval not in ("1h", "6h", "1d", "max", "all"):
+        raise HTTPException(400, f"Invalid interval: {interval}")
+    result = await polymarket.get_price_history(clob_token_id, interval)
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@app.get("/api/kalshi/history/{ticker}")
+async def get_kalshi_history(ticker: str, days: int = 30, series: str = ""):
+    """Get candlestick history for a Kalshi market."""
+    if not 1 <= days <= 365:
+        raise HTTPException(400, "days must be between 1 and 365")
+    result = await kalshi.get_candlesticks(ticker, days, series)
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@app.get("/api/predictions/analysis")
+async def predictions_analysis():
+    """AI analysis of trending prediction markets."""
+    cached = cache.get("predictions_analysis")
+    if cached is not None:
+        return cached
+
+    pm_result, kalshi_result = await asyncio.gather(
+        polymarket.get_trending_markets(),
+        kalshi.get_trending_events(),
+    )
+    pm_markets = pm_result.get("markets", [])[:10]
+    kalshi_events = kalshi_result.get("events", [])[:10]
+
+    summary = {
+        "polymarket_top": [
+            {"question": m["question"], "yes_pct": round(m["outcome_prices"][0] * 100) if m.get("outcome_prices") else 0, "volume": round(m.get("volume", 0))}
+            for m in pm_markets[:5]
+        ],
+        "kalshi_top": [
+            {"title": e["title"], "yes_pct": round(e.get("yes_price", 0) * 100), "category": e.get("category", ""), "volume": round(e.get("volume", 0))}
+            for e in kalshi_events[:5]
+        ],
+    }
+
+    ai_analysis = None
+    model_available = await model.health_check()
+    if model_available:
+        try:
+            prompt = _build_predictions_prompt(pm_markets, kalshi_events)
+            resp = await model.generate_insight(prompt)
+            ai_analysis = resp.get("insight") if resp else None
+        except Exception as e:
+            logger.warning("Model generation failed: %s", e)
+            ai_analysis = None
+
+    result = {"summary": summary, "ai_analysis": ai_analysis, "model_available": model_available}
+    cache.set("predictions_analysis", result, ttl_seconds=300)
+    return result
+
+
+@app.get("/api/arbitrage")
+async def get_arbitrage():
+    """Scan ALL markets on Polymarket and Kalshi for cross-platform arbitrage."""
+    cached = cache.get("arbitrage_scan")
+    if cached is not None:
+        return cached
+
+    pm_markets, kalshi_events = await asyncio.gather(
+        polymarket.get_all_markets(max_pages=5),
+        kalshi.get_all_events(max_pages=2),
+    )
+
+    result = find_arbitrage(pm_markets, kalshi_events)
+    cache.set("arbitrage_scan", result, ttl_seconds=300)
+    return result
+
+
+@app.get("/api/calibration")
+async def get_calibration():
+    """Calibration curve: do X% markets resolve Yes X% of the time?"""
+    cached = cache.get("calibration_data")
+    if cached is not None:
+        return cached
+
+    resolved = await polymarket.get_resolved_markets(5)
+    if not resolved:
+        raise HTTPException(503, "No resolved markets available")
+
+    buckets = {}
+    for i in range(10):
+        lo, hi = i * 0.1, (i + 1) * 0.1
+        label = f"{int(lo*100)}-{int(hi*100)}%"
+        in_bucket = [m for m in resolved if lo <= m["last_trade_price"] < hi]
+        if not in_bucket:
+            buckets[label] = {"range": label, "predicted_avg": (lo + hi) / 2, "actual_rate": None, "count": 0}
+            continue
+        actual = sum(1 for m in in_bucket if m["resolved_yes"]) / len(in_bucket)
+        pred_avg = sum(m["last_trade_price"] for m in in_bucket) / len(in_bucket)
+        buckets[label] = {"range": label, "predicted_avg": round(pred_avg, 3), "actual_rate": round(actual, 3), "count": len(in_bucket)}
+
+    brier_scores = [(m["last_trade_price"] - (1 if m["resolved_yes"] else 0)) ** 2 for m in resolved]
+    brier = round(sum(brier_scores) / len(brier_scores), 4) if brier_scores else None
+
+    result = {"buckets": list(buckets.values()), "brier_score": brier, "total_markets": len(resolved)}
+    cache.set("calibration_data", result, ttl_seconds=3600)
+    return result
+
+
+@app.get("/api/smart-money")
+async def get_smart_money():
+    """Detect abnormal volume spikes indicating informed money."""
+    cached = cache.get("smart_money")
+    if cached is not None:
+        return cached
+
+    pm_result = await polymarket.get_trending_markets(100)
+    markets = pm_result.get("markets", [])
+
+    alerts = []
+    for m in markets:
+        vol = m.get("volume", 0)
+        vol24 = m.get("volume_24hr", 0)
+        if vol <= 0 or vol24 <= 0:
+            continue
+        avg_daily = vol / 30
+        if avg_daily <= 0:
+            continue
+        spike = vol24 / avg_daily
+        if spike >= 2.0:
+            yes = m.get("outcome_prices", [0])[0] if m.get("outcome_prices") else 0
+            alerts.append({
+                "question": m.get("question", ""),
+                "slug": m.get("slug", ""),
+                "spike_ratio": round(spike, 2),
+                "volume_24hr": round(vol24),
+                "avg_daily_vol": round(avg_daily),
+                "current_yes": round(yes * 100, 1),
+                "volume": round(vol),
+            })
+
+    alerts.sort(key=lambda x: x["spike_ratio"], reverse=True)
+    result = {"alerts": alerts[:20], "total_scanned": len(markets)}
+    cache.set("smart_money", result, ttl_seconds=300)
+    return result
+
+
+@app.get("/api/market-correlations")
+async def get_market_correlations():
+    """Cross-market correlation network from price history."""
+    cached = cache.get("market_correlations")
+    if cached is not None:
+        return cached
+
+    pm_result = await polymarket.get_trending_markets(100)
+    markets = sorted(pm_result.get("markets", []), key=lambda m: m.get("volume", 0), reverse=True)[:15]
+
+    histories = {}
+    for m in markets:
+        token_id = m.get("clob_token_ids", [None])[0]
+        if not token_id:
+            continue
+        hist = await polymarket.get_price_history(token_id, "1d")
+        pts = hist.get("history", [])
+        if len(pts) >= 10:
+            histories[m.get("question", "")[:40]] = {
+                "prices": [p["price"] for p in pts],
+                "volume": m.get("volume", 0),
+                "slug": m.get("slug", ""),
+            }
+
+    labels = list(histories.keys())
+    if len(labels) < 3:
+        return {"nodes": [], "edges": [], "count": 0}
+
+    import numpy as np
+    nodes = [{"id": i, "label": l, "volume": histories[l]["volume"], "slug": histories[l]["slug"]} for i, l in enumerate(labels)]
+
+    min_len = min(len(histories[l]["prices"]) for l in labels)
+    price_matrix = np.array([histories[l]["prices"][:min_len] for l in labels])
+    returns = np.diff(price_matrix, axis=1)
+
+    edges = []
+    n = len(labels)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if np.std(returns[i]) > 1e-6 and np.std(returns[j]) > 1e-6:
+                try:
+                    corr = float(np.corrcoef(returns[i], returns[j])[0, 1])
+                except Exception:
+                    continue
+                if not np.isnan(corr) and abs(corr) > 0.3:
+                    edges.append({"source": i, "target": j, "correlation": round(corr, 3)})
+
+    result = {"nodes": nodes, "edges": edges, "count": len(labels)}
+    cache.set("market_correlations", result, ttl_seconds=1800)
+    return result
 
 
 @app.get("/api/options/{symbol}")
@@ -499,7 +721,7 @@ async def data_quality(req: PortfolioRequest):
 
     async def _fetch(sym):
         try:
-            return sym, await yf_client.get_daily(sym)
+            return sym, await yf_client.get_daily(sym, days=365)
         except Exception:
             return sym, []
 
@@ -978,7 +1200,21 @@ async def admin_overview(user_id: str = Query(..., description="Admin user ID"),
     }
 
 
-# ── Helper ──────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────
+
+def _build_predictions_prompt(pm_markets: list, kalshi_events: list) -> str:
+    lines = ["Analyze these trending prediction markets and provide key insights:\n"]
+    lines.append("POLYMARKET (top markets by 24h volume):")
+    for m in pm_markets[:7]:
+        yes = round(m["outcome_prices"][0] * 100) if m.get("outcome_prices") and len(m.get("outcome_prices",[])) > 0 else 0
+        lines.append(f"  {m['question']} => {yes}% Yes (volume ${m.get('volume', 0):,.0f})")
+    lines.append("\nKALSHI (top events by volume):")
+    for e in kalshi_events[:7]:
+        yes = round(e.get("yes_price", 0) * 100)
+        lines.append(f"  [{e.get('category', '')}] {e['title']} => {yes}% Yes (volume ${e.get('volume', 0):,.0f})")
+    lines.append("\nProvide: 1) Key themes across markets 2) Markets with extreme probabilities as potential catalysts 3) Any implications for financial portfolios")
+    return "\n".join(lines)
+
 
 def _build_insight_prompt(analytics: dict, macro: dict, news: list) -> str:
     """Build a context string for FinGPT to generate portfolio insight.
@@ -1044,6 +1280,104 @@ async def clear_cache():
     cache.clear()
     logger.info("Cache cleared")
     return {"status": "ok", "message": "Cache cleared"}
+
+
+
+# ── AI News Summarization (AlphaSense-inspired) ────────
+
+@app.post("/api/news-digest")
+async def news_digest(req: PortfolioRequest):
+    """AI-powered news digest for portfolio holdings."""
+    holdings = [h.model_dump() for h in req.holdings]
+    symbols = [yf_client.normalize_symbol(h["symbol"]) for h in holdings]
+
+    news = await yf_client.get_news(symbols, limit=15)
+    if not news:
+        return {"digest": [], "summary": "No recent news found for your holdings."}
+
+    digest = []
+    for article in news[:10]:
+        digest.append({
+            "title": article.get("title", ""),
+            "source": article.get("source", ""),
+            "url": article.get("url", ""),
+            "tickers": article.get("tickers", []),
+            "sentiment": article.get("fingpt_sentiment", "neutral"),
+        })
+
+    model_available = await model.health_check()
+    ai_summary = None
+    if model_available and digest:
+        headlines = "\n".join([f"- {d['title']}" for d in digest[:8]])
+        prompt = f"Summarize these news headlines for portfolio with {', '.join(symbols[:5])}. Focus on investor impact. 3-4 bullet points:\n\n{headlines}"
+        try:
+            resp = await model.generate_insight(prompt)
+            ai_summary = resp.get("insight") if resp else None
+        except Exception:
+            pass
+
+    return {"digest": digest, "ai_summary": ai_summary, "model_available": model_available}
+
+
+# ── Portfolio Rebalancing (Wealthfront-inspired) ────────
+
+@app.post("/api/rebalance")
+async def rebalance_suggestions(req: PortfolioRequest):
+    """Suggest rebalancing trades to optimize portfolio allocation."""
+    holdings = [h.model_dump() for h in req.holdings]
+    for h in holdings:
+        h["symbol"] = yf_client.normalize_symbol(h["symbol"])
+    symbols = [h["symbol"] for h in holdings]
+
+    async def _fetch(sym):
+        try:
+            return sym, await yf_client.get_daily(sym)
+        except Exception:
+            return sym, []
+
+    results = await asyncio.gather(*[_fetch(s) for s in symbols])
+    daily_data = {sym: data for sym, data in results}
+
+    positions = []
+    total_value = 0
+    for h in holdings:
+        data = daily_data.get(h["symbol"], [])
+        price = float(data[0]["close"]) if data else h["avg_cost"]
+        value = h["shares"] * price
+        total_value += value
+        positions.append({"symbol": h["symbol"], "shares": h["shares"], "price": round(price, 2), "value": round(value, 2)})
+
+    if total_value <= 0:
+        return {"suggestions": [], "error": "Portfolio value is zero"}
+
+    for p in positions:
+        p["weight"] = round(p["value"] / total_value * 100, 2)
+
+    equal_weight = round(100 / len(positions), 2)
+    suggestions = []
+    for p in positions:
+        drift = p["weight"] - equal_weight
+        if abs(drift) > 5:
+            action = "REDUCE" if drift > 0 else "ADD"
+            trade_value = abs(drift) / 100 * total_value
+            trade_shares = round(trade_value / p["price"], 2) if p["price"] > 0 else 0
+            suggestions.append({
+                "symbol": p["symbol"], "action": action,
+                "reason": f"{'Over' if drift > 0 else 'Under'}weight by {abs(drift):.1f}pp ({p['weight']:.1f}% vs {equal_weight:.1f}% target)",
+                "current_weight": p["weight"], "target_weight": equal_weight,
+                "drift": round(drift, 2), "suggested_shares": trade_shares,
+                "suggested_value": round(trade_value, 2),
+            })
+
+    suggestions.sort(key=lambda x: abs(x["drift"]), reverse=True)
+    hhi = sum((p["weight"]/100)**2 for p in positions)
+    effective_n = round(1/hhi, 2) if hhi > 0 else len(positions)
+
+    return {
+        "positions": positions, "suggestions": suggestions,
+        "total_value": round(total_value, 2), "hhi": round(hhi, 4),
+        "effective_n": effective_n, "target": "equal_weight",
+    }
 
 
 # ── Serve Frontend ──────────��────────────────────────���──────
