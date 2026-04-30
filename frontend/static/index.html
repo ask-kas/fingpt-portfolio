@@ -1067,7 +1067,10 @@
       <!-- AI Insight -->
       <div class="panel full-width" id="sectionAI">
         <h2><span class="section-badge"></span> AI Insight (Veris) <span class="info-btn" onclick="showInfo('ai')">i</span></h2>
-        <div id="aiInsight" class="ai-box unavailable">Start the Colab notebook to enable AI insights.</div>
+        <div id="aiInsight" class="ai-box">
+          <p style="color:var(--muted);margin-bottom:10px">AI-powered portfolio analysis using Gemma 4. Takes 1-2 minutes on first run.</p>
+          <button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Generate AI Insight</button>
+        </div>
       </div>
 
       <!-- Rebalancing Suggestions (Wealthfront-inspired) -->
@@ -3323,6 +3326,30 @@ function renderMyBets() {
     <span>Value: <b>$${totalValue.toFixed(2)}</b></span>
     <span>P&L: <b style="color:${totalColor}">${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}</b></span>
   </div>`;
+}
+
+// ── On-Demand AI Insight ──────────────────────────────────
+async function fetchAiInsight() {
+  const valid = holdings.filter(h => h.symbol && h.symbol.trim() && h.shares > 0);
+  if (!valid.length) return;
+  const box = document.getElementById('aiInsight');
+  const btn = document.getElementById('aiInsightBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating... (1-2 min)'; }
+  box.innerHTML = '<div class="loader">Gemma 4 is thinking...</div>';
+  try {
+    const r = await fetch('/api/ai-insight', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({holdings: valid}),
+    });
+    const d = await r.json();
+    if (d.insight) {
+      box.innerHTML = `<div style="white-space:pre-wrap;line-height:1.6;font-size:0.82rem">${d.insight}</div><div style="font-size:0.62rem;color:var(--muted);margin-top:8px">${d.model_name || 'AI'}</div>`;
+    } else {
+      box.innerHTML = `<p style="color:var(--muted)">AI model not available. ${d.model_name || 'Run ollama serve to enable.'}</p><button class="btn-primary" onclick="fetchAiInsight()" style="font-size:0.78rem;margin-top:8px">Retry</button>`;
+    }
+  } catch (e) {
+    box.innerHTML = `<p style="color:var(--red)">Failed: ${e.message}</p><button class="btn-primary" onclick="fetchAiInsight()" style="font-size:0.78rem;margin-top:8px">Retry</button>`;
+  }
 }
 
 // ── Candlestick Charts ─────────────────────────────────────

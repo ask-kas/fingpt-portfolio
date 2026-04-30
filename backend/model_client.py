@@ -32,10 +32,15 @@ class FinGPTClient:
 
     async def _check_ollama(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=3) as client:
                 r = await client.get(f"{OLLAMA_URL}/api/tags")
-                self._ollama_available = r.status_code == 200
-                return self._ollama_available
+                if r.status_code != 200:
+                    self._ollama_available = False
+                    return False
+                models = r.json().get("models", [])
+                loaded = any(m.get("name", "").startswith("gemma") for m in models)
+                self._ollama_available = loaded
+                return loaded
         except Exception:
             self._ollama_available = False
             return False

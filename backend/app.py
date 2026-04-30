@@ -571,21 +571,10 @@ async def analyze(req: PortfolioRequest,
             return {"error": str(result)}
         return result
 
-    # Run FinGPT sentiment on headlines if model is available
+    # AI features are available on-demand via /api/ai-insight endpoint
+    # Not run during analysis to avoid blocking (Gemma 4 takes 2-3 min on Intel)
     model_available = await model.health_check()
-    if model_available and news:
-        headlines = [a["title"] for a in news if a.get("title")]
-        sentiments = await model.batch_sentiment(headlines)
-        for i, article in enumerate(news):
-            if i < len(sentiments):
-                article["fingpt_sentiment"] = sentiments[i]
-
-    # 5. AI insight
     ai_insight = None
-    if model_available:
-        context = _build_insight_prompt(analytics, macro, news)
-        insight_resp = await model.generate_insight(context)
-        ai_insight = insight_resp.get("insight") or insight_resp.get("error")
 
     response = {
         "analytics": analytics,
@@ -1282,6 +1271,28 @@ async def clear_cache():
     logger.info("Cache cleared")
     return {"status": "ok", "message": "Cache cleared"}
 
+
+
+# ── On-Demand AI Insight ────────────────────────────────
+
+@app.post("/api/ai-insight")
+async def ai_insight_endpoint(req: PortfolioRequest):
+    """Generate AI portfolio insight on demand (not during analysis)."""
+    ok = await model.health_check()
+    if not ok:
+        return {"insight": None, "model_available": False, "model_name": model.model_name}
+
+    holdings = [h.model_dump() for h in req.holdings]
+    for h in holdings:
+        h["symbol"] = yf_client.normalize_symbol(h["symbol"])
+
+    prompt = f"Analyze this portfolio and give 3-4 bullet points of actionable advice:\n\n"
+    for h in holdings:
+        prompt += f"- {h['symbol']}: {h['shares']} shares at ${h['avg_cost']} avg cost\n"
+    prompt += "\nFocus on: diversification, risk, and what to consider next."
+
+    resp = await model.generate_insight(prompt)
+    return {"insight": resp.get("insight"), "model_available": True, "model_name": model.model_name}
 
 
 # ── AI News Summarization (AlphaSense-inspired) ────────
