@@ -1277,7 +1277,7 @@ async def clear_cache():
 
 @app.post("/api/ai-insight")
 async def ai_insight_endpoint(req: PortfolioRequest):
-    """Generate AI portfolio insight on demand (not during analysis)."""
+    """Generate AI portfolio insight on demand with full analytics context."""
     ok = await model.health_check()
     if not ok:
         return {"insight": None, "model_available": False, "model_name": model.model_name}
@@ -1285,11 +1285,68 @@ async def ai_insight_endpoint(req: PortfolioRequest):
     holdings = [h.model_dump() for h in req.holdings]
     for h in holdings:
         h["symbol"] = yf_client.normalize_symbol(h["symbol"])
+    symbols = [h["symbol"] for h in holdings]
 
-    prompt = f"Analyze this portfolio and give 3-4 bullet points of actionable advice:\n\n"
-    for h in holdings:
-        prompt += f"- {h['symbol']}: {h['shares']} shares at ${h['avg_cost']} avg cost\n"
-    prompt += "\nFocus on: diversification, risk, and what to consider next."
+    # Fetch live data for context
+    async def _fetch(sym):
+        try:
+            return sym, await yf_client.get_daily(sym)
+        except Exception:
+            return sym, []
+
+    fetch_syms = symbols + (["SPY"] if "SPY" not in symbols else [])
+    results = await asyncio.gather(*[_fetch(s) for s in fetch_syms])
+    daily_data = {sym: data for sym, data in results}
+    market_data = daily_data.pop("SPY", []) if "SPY" not in symbols else None
+
+    rf = await _current_risk_free_rate()
+    analytics = analyze_portfolio(holdings, daily_data, rf, market_data)
+    s = analytics.get("summary", {})
+
+    # Build rich context prompt
+    prompt = """You are a seasoned financial advisor with 20 years of experience at Goldman Sachs and JPMorgan. You provide clear, actionable portfolio analysis. Never use emojis. Use professional financial language but keep it accessible to a college student learning investing.
+
+Analyze this portfolio using the data below. Structure your response with these sections:
+
+**Portfolio Overview** — Summarize holdings, total value, and overall health in 2-3 sentences.
+
+**Risk Assessment** — Analyze volatility, beta, max drawdown, and concentration (HHI). Is the risk appropriate? What could go wrong?
+
+**Performance Analysis** — Evaluate Sharpe ratio, alpha, and returns. Is the portfolio earning enough for the risk taken?
+
+**Actionable Recommendations** — Give 3-4 specific, concrete steps to improve the portfolio. Be specific about what to buy, sell, or rebalance.
+
+---
+
+PORTFOLIO DATA:
+
+"""
+    for h in analytics.get("holdings", []):
+        if h.get("error"):
+            continue
+        prompt += f"{h['symbol']}: {h.get('shares',0)} shares, price ${h.get('current_price',0):.2f}, "
+        prompt += f"value ${h.get('position_value',0):,.2f}, "
+        prompt += f"return {h.get('gain_loss_pct',0):.1f}%, "
+        prompt += f"vol {h.get('volatility',0)*100:.1f}%, "
+        prompt += f"beta {h.get('beta',0):.2f}, "
+        prompt += f"sharpe {h.get('sharpe',0):.2f}\n"
+
+    prompt += f"""
+PORTFOLIO METRICS:
+- Total value: ${s.get('total_value',0):,.2f}
+- Total cost basis: ${s.get('total_cost',0):,.2f}
+- Price return: {s.get('total_gain_loss_pct',0):.2f}%
+- Volatility: {s.get('portfolio_volatility',0)*100:.1f}% annualized
+- Sharpe ratio: {s.get('portfolio_sharpe',0):.4f}
+- Sortino ratio: {s.get('portfolio_sortino',0):.4f}
+- Beta vs SPY: {s.get('portfolio_beta',0):.2f}
+- Alpha (Jensen): {s.get('portfolio_alpha',0)*100:.2f}%
+- Max drawdown: {s.get('max_drawdown',0)*100:.1f}%
+- HHI concentration: {s.get('hhi',0):.3f}
+- Effective N: {s.get('effective_n',0):.2f}
+- Risk-free rate: {rf*100:.2f}%
+
+Provide your analysis now. Be direct and specific. No emojis."""
 
     resp = await model.generate_insight(prompt)
     return {"insight": resp.get("insight"), "model_available": True, "model_name": model.model_name}
