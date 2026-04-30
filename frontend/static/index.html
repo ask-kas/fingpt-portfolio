@@ -167,95 +167,91 @@
 
   /* ── Dashboard Grid ─────────────────────────── */
   .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  /* ── Mobile Responsive (Tablet 768px) ────── */
-  @media (max-width: 768px) {
-    .dashboard { grid-template-columns: 1fr; }
-    header { flex-direction: column; gap: 8px; align-items: flex-start; }
-    .container { padding: 12px; }
-    table { font-size: 0.72rem; }
-    th, td { padding: 4px 6px; }
-    .summary-grid { grid-template-columns: repeat(2, 1fr); }
-    .mc-charts { grid-template-columns: 1fr !important; }
-    .pm-grid { grid-template-columns: 1fr !important; }
-    .nav-bar { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    .nav-links { white-space: nowrap; padding-bottom: 4px; }
-    .nav-link { padding: 6px 10px; font-size: 0.68rem; }
-    .panel { padding: 16px; margin-bottom: 16px; }
-    .panel h2 { font-size: 0.95rem; }
-    .user-bar { flex-wrap: wrap; gap: 6px; }
-    .btn-row { flex-wrap: wrap; }
-    .ev-form { grid-template-columns: 1fr; }
-    .lesson-drawer { width: 100vw; max-width: 100vw; padding: 20px; }
-    .pm-history-modal { width: 95vw; padding: 16px; }
-    .pm-history-chart { height: 250px; }
-    .delta-grid { grid-template-columns: repeat(2, 1fr); }
-    .badge-grid { grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); }
-    .skill-row.left { padding-left: 5%; }
-    .skill-row.right { padding-right: 5%; }
-    .skill-circle { width: 46px; height: 46px; }
-    .streak-pill { padding: 4px 10px; }
-    .bets-table { font-size: 0.68rem; }
-    .bets-table th, .bets-table td { padding: 6px 4px; }
-    .arb-table { font-size: 0.65rem; }
-    .arb-table th, .arb-table td { padding: 4px; }
-    .whatif-form { flex-direction: column; }
-    .whatif-form input, .whatif-form select { width: 100%; }
-    .pm-controls { flex-direction: column; }
-    .pm-search { flex: 1 1 100%; width: 100%; }
-    .pm-source-row { flex-wrap: wrap; }
-    .learn-rank-banner { flex-direction: column; gap: 10px; align-items: flex-start; }
-    .learn-rank-banner > div:nth-child(2) { margin: 0; width: 100%; }
-    .ceremony-title { font-size: 1.2rem; }
-    .ceremony-stage { font-size: 2rem; }
-  }
+  /* ── Device-Agnostic Fluid Design ─────── */
+  /* Uses clamp/min/max instead of breakpoints — works on ANY screen */
 
-  /* ── Mobile Phone (480px) ───────────────── */
-  @media (max-width: 480px) {
-    .summary-grid { grid-template-columns: 1fr; gap: 8px; }
-    .metric-card .value { font-size: 1.1rem; }
-    .metric-card { padding: 12px; }
-    .holdings-grid { grid-template-columns: 1fr 1fr 1fr auto; gap: 4px; }
-    .holdings-grid input { font-size: 0.75rem; padding: 6px; }
-    .container { padding: 8px; }
-    .panel { padding: 12px; border-radius: 10px; }
-    .panel h2 { font-size: 0.88rem; margin-bottom: 10px; }
-    body { font-size: 14px; }
-    .btn-primary, .btn-secondary { padding: 10px 16px; font-size: 0.78rem; min-height: 44px; }
-    .pm-card { padding: 12px; }
-    .pm-card-question { font-size: 0.75rem; }
-    .pm-card-img { width: 32px; height: 32px; }
-    .pm-prob-pct { font-size: 0.72rem; width: 32px; }
-    .pm-filter-btn { padding: 5px 8px; font-size: 0.65rem; }
-    .pm-source-btn { padding: 5px 10px; font-size: 0.7rem; }
-    .tt-tab, .mi-tab { padding: 5px 10px; font-size: 0.68rem; }
-    .skill-tree { padding: 4px 0; }
-    .skill-row { max-width: 100%; }
-    .skill-label { font-size: 0.6rem; max-width: 90px; }
-    .skill-circle { width: 40px; height: 40px; font-size: 0.75rem; }
-    .learn-xp-bar { height: 6px; }
-    .badge-slot { padding: 6px 2px; }
-    .badge-icon { width: 34px; height: 34px; font-size: 1rem; }
-    .badge-name { font-size: 0.5rem; }
-    .quiz-options { grid-template-columns: 1fr; }
-    .quiz-option { padding: 12px; min-height: 44px; }
-    .spike-row { flex-wrap: wrap; gap: 6px; }
-    .spike-row > div:first-child { flex: 1 1 100%; }
-    .bets-summary { flex-direction: column; gap: 8px; }
-    .pm-both-container { grid-template-columns: 1fr; }
-    .auth-card { width: 95%; padding: 24px 16px; }
-    #cmdPalette > div { width: 95vw; }
-  }
+  /* Fluid container */
+  .container { padding: clamp(8px, 2vw, 24px); }
 
-  /* ── Touch targets (all mobile) ─────────── */
-  @media (max-width: 768px) {
-    button, a.nav-link, .quiz-option, .pm-filter-btn, .pm-source-btn, .tt-tab, .mi-tab {
-      min-height: 44px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-    input, select { min-height: 44px; font-size: 16px; }
-  }
+  /* Fluid panels */
+  .panel { padding: clamp(12px, 2.5vw, 24px); margin-bottom: clamp(12px, 2vw, 24px); border-radius: clamp(8px, 1.5vw, 16px); }
+  .panel h2 { font-size: clamp(0.85rem, 2vw, 1.05rem); }
+
+  /* Fluid typography */
+  .metric-card .value { font-size: clamp(1rem, 2.5vw, 1.25rem); }
+  .metric-card .label { font-size: clamp(0.58rem, 1.2vw, 0.65rem); }
+  .metric-card .sub { font-size: clamp(0.6rem, 1.2vw, 0.68rem); }
+  .metric-card { padding: clamp(10px, 2vw, 16px); }
+
+  /* Grids that auto-adapt */
+  .summary-grid { grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); gap: clamp(6px, 1.5vw, 12px); }
+  .pm-grid { grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+  .delta-grid { grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); }
+  .badge-grid { grid-template-columns: repeat(auto-fill, minmax(min(65px, 30%), 1fr)); }
+  .ev-form { grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); }
+
+  /* Fluid skill tree */
+  .skill-circle { width: clamp(36px, 7vw, 56px); height: clamp(36px, 7vw, 56px); }
+  .skill-label { font-size: clamp(0.55rem, 1.3vw, 0.68rem); }
+  .skill-row { max-width: min(400px, 95%); }
+
+  /* Nav bar — always scrollable */
+  .nav-bar { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .nav-links { white-space: nowrap; }
+  .nav-link { padding: clamp(4px, 1vw, 8px) clamp(6px, 1.5vw, 12px); font-size: clamp(0.62rem, 1.3vw, 0.75rem); }
+
+  /* Buttons — always tappable */
+  button, .btn-primary, .btn-secondary { min-height: 44px; }
+  input, select, textarea { min-height: 44px; font-size: max(16px, 0.85rem); }
+
+  /* Forms that stack on narrow */
+  .whatif-form, .pm-controls, .pm-source-row, .btn-row, .user-bar, .bets-summary { flex-wrap: wrap; }
+  .pm-search { min-width: min(200px, 100%); }
+
+  /* Modals — fit any screen */
+  .lesson-drawer { width: min(520px, 100vw); max-width: 100vw; padding: clamp(16px, 3vw, 28px); }
+  .pm-history-modal { width: min(720px, 95vw); padding: clamp(12px, 2.5vw, 24px); }
+  .pm-history-chart { height: clamp(200px, 40vw, 350px); }
+  .auth-card { width: min(380px, 95vw); padding: clamp(20px, 4vw, 36px) clamp(16px, 3vw, 32px); }
+  #cmdPalette > div { width: min(520px, 92vw); }
+
+  /* Ceremony — fluid */
+  .ceremony-title { font-size: clamp(1rem, 3vw, 1.5rem); }
+  .ceremony-stage { font-size: clamp(1.5rem, 5vw, 3rem); }
+  .ceremony-xp { font-size: clamp(0.9rem, 2.5vw, 1.2rem); }
+
+  /* Tables — always scrollable */
+  .bets-table, .arb-table, table { font-size: clamp(0.62rem, 1.3vw, 0.8rem); }
+  th, td { padding: clamp(3px, 0.8vw, 8px) clamp(4px, 1vw, 8px); }
+
+  /* Learning mode — fluid */
+  .learn-rank-banner { flex-wrap: wrap; gap: clamp(8px, 1.5vw, 16px); }
+  .streak-pill { padding: clamp(4px, 0.8vw, 6px) clamp(8px, 1.5vw, 14px); }
+  .badge-icon { width: clamp(30px, 5vw, 42px); height: clamp(30px, 5vw, 42px); }
+  .badge-name { font-size: clamp(0.45rem, 1vw, 0.55rem); }
+
+  /* Quiz — single column on narrow, 2 on wide */
+  .quiz-options { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+  .quiz-option { min-height: 44px; padding: clamp(10px, 2vw, 14px); }
+
+  /* PM cards — fluid */
+  .pm-card { padding: clamp(10px, 2vw, 16px); }
+  .pm-card-question { font-size: clamp(0.72rem, 1.5vw, 0.82rem); }
+  .pm-card-img { width: clamp(28px, 5vw, 40px); height: clamp(28px, 5vw, 40px); }
+  .pm-filter-btn, .pm-source-btn, .tt-tab, .mi-tab { padding: clamp(4px, 0.8vw, 6px) clamp(8px, 1.5vw, 14px); font-size: clamp(0.62rem, 1.3vw, 0.78rem); min-height: 44px; }
+
+  /* Holdings input — fluid */
+  .holdings-grid { gap: clamp(4px, 1vw, 8px); }
+  .holdings-grid input { font-size: max(16px, 0.8rem); padding: clamp(6px, 1vw, 10px); }
+
+  /* Header wraps on narrow */
+  header { flex-wrap: wrap; gap: clamp(6px, 1.5vw, 12px); }
+
+  /* Both view — stack on narrow */
+  .pm-both-container { grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
+
+  /* Spike rows — wrap on narrow */
+  .spike-row { flex-wrap: wrap; gap: clamp(4px, 1vw, 12px); }
   .full-width { grid-column: 1 / -1; }
 
   /* ── Summary Cards ──────────────────────────── */
@@ -378,10 +374,7 @@
   }
   .nav-link:hover { color: rgba(255,255,255,0.65); border-bottom-color: var(--accent); }
   .nav-link.active { color: #2DB87A; border-bottom-color: #2DB87A; }
-  @media (max-width: 768px) {
-    .nav-bar { padding: 0 12px; margin: 0 -12px 16px; }
-    .nav-link { padding: 8px 10px; font-size: 0.68rem; }
-  }
+  /* nav fluid sizing handled in device-agnostic section */
 
   /* ── Legendary Investors ────────────────────── */
   .investor-card {
@@ -634,7 +627,7 @@
   /* Both view */
   .pm-both-container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   .pm-column-header { font-size: 0.82rem; font-weight: 700; color: var(--accent2); margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
-  @media (max-width: 900px) { .pm-both-container { grid-template-columns: 1fr; } }
+  /* both-view fluid layout handled in device-agnostic section */
 
   /* Clickable cards */
   .pm-card.clickable { cursor: pointer; }
