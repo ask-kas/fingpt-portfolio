@@ -571,9 +571,18 @@ async def analyze(req: PortfolioRequest,
             return {"error": str(result)}
         return result
 
-    # AI features are available on-demand via /api/ai-insight endpoint
-    # Not run during analysis to avoid blocking (Gemma 4 takes 2-3 min on Intel)
+    # Sentiment analysis — only if Claude API is available (fast, ~2s)
+    # Skipped for Ollama/Gemma (too slow, blocks analysis for minutes)
     model_available = await model.health_check()
+    if model_available and model._claude_available and news:
+        try:
+            headlines = [a["title"] for a in news if a.get("title")]
+            sentiments = await model.batch_sentiment(headlines)
+            for i, article in enumerate(news):
+                if i < len(sentiments):
+                    article["fingpt_sentiment"] = sentiments[i]
+        except Exception as e:
+            logger.warning("Sentiment analysis failed: %s", e)
     ai_insight = None
 
     response = {
