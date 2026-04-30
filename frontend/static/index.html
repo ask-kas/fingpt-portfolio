@@ -7,6 +7,7 @@
 <title>Veris — Portfolio Intelligence</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%232DB87A'/></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 <style>
   :root {
@@ -309,6 +310,19 @@
     white-space: pre-wrap; line-height: 1.7;
   }
   .ai-box.unavailable { opacity: 0.5; font-style: italic; }
+  .ai-md { font-size: 0.82rem; line-height: 1.7; }
+  .ai-md h1, .ai-md h2, .ai-md h3 { color: var(--text); margin: 16px 0 8px; }
+  .ai-md h2 { font-size: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .ai-md h3 { font-size: 0.9rem; }
+  .ai-md p { margin: 8px 0; }
+  .ai-md ul, .ai-md ol { margin: 8px 0; padding-left: 20px; }
+  .ai-md li { margin: 4px 0; }
+  .ai-md strong { color: var(--text); }
+  .ai-md table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 0.78rem; }
+  .ai-md th, .ai-md td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
+  .ai-md th { background: var(--surface2); font-weight: 600; }
+  .ai-md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+  .ai-md code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 0.78rem; }
 
   .warnings-banner {
     background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.2);
@@ -1943,7 +1957,7 @@ function renderResults(data) {
   const aiEl = document.getElementById('aiInsight');
   if (ai_insight) {
     aiEl.className = 'ai-box';
-    aiEl.innerHTML = `<div style="white-space:pre-wrap;line-height:1.6;font-size:0.82rem">${ai_insight}</div>`;
+    aiEl.innerHTML = `<div class="ai-md">${typeof marked !== 'undefined' ? marked.parse(ai_insight) : ai_insight}</div>`;
   } else {
     aiEl.className = 'ai-box';
     aiEl.innerHTML = `<p style="color:var(--muted);margin-bottom:10px">AI-powered portfolio analysis. Click to generate.</p><button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Generate AI Insight</button>`;
@@ -3348,7 +3362,7 @@ async function fetchAiInsight() {
     });
     const d = await r.json();
     if (d.insight) {
-      box.innerHTML = `<div style="white-space:pre-wrap;line-height:1.6;font-size:0.82rem">${d.insight}</div><div style="font-size:0.62rem;color:var(--muted);margin-top:8px">${d.model_name || 'AI'}</div>`;
+      box.innerHTML = `<div class="ai-md">${typeof marked !== 'undefined' ? marked.parse(d.insight) : d.insight}</div><div style="font-size:0.62rem;color:var(--muted);margin-top:8px">${d.model_name || 'AI'}</div>`;
     } else {
       box.innerHTML = `<p style="color:var(--muted)">AI model not available. ${d.model_name || 'Run ollama serve to enable.'}</p><button class="btn-primary" onclick="fetchAiInsight()" style="font-size:0.78rem;margin-top:8px">Retry</button>`;
     }
