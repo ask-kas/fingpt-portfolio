@@ -115,11 +115,12 @@ class WhatIfRequest(BaseModel):
 
 @app.get("/api/health")
 async def health():
-    """Check backend health and Colab model availability."""
+    """Check backend health and AI model availability."""
     model_ok = await model.health_check()
     return {
         "backend": "ok",
         "model_server": "connected" if model_ok else "unavailable",
+        "model_name": model.model_name,
         "model_url": model.base_url,
     }
 
