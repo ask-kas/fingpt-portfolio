@@ -835,11 +835,15 @@ function showLockedToast(stageNum) {
 // ── Advanced Mode Toggle ─────────────────────────────────
 function toggleAdvancedMode() {
   const learner = getLearner();
+  if (isAdmin()) return;
   learner.learningMode = !learner.learningMode;
   saveLearner(learner);
   renderLearnSection();
   applyToolGating();
   if (typeof buildNavBar === 'function') buildNavBar();
+  if (typeof lastAnalysisData !== 'undefined' && lastAnalysisData && typeof renderResults === 'function') {
+    renderResults(lastAnalysisData);
+  }
   const btn = document.getElementById('advancedModeBtn');
   if (btn) btn.textContent = learner.learningMode ? 'Advanced Mode: OFF' : 'Advanced Mode: ON';
 }
