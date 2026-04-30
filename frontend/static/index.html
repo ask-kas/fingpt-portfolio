@@ -1939,10 +1939,15 @@ function renderResults(data) {
     freshText.textContent = `All prices verified live \u00B7 ${priceSnippets} \u00B7 Last calculated ${nowUtc} UTC`;
   }
 
-  // AI Insight
+  // AI Insight — on-demand via button
   const aiEl = document.getElementById('aiInsight');
-  if (model_available && ai_insight) { aiEl.className = 'ai-box'; aiEl.textContent = ai_insight; }
-  else { aiEl.className = 'ai-box unavailable'; aiEl.textContent = model_available ? 'No insight generated.' : 'Veris model is offline. Start the Colab notebook to enable AI insights and sentiment analysis. All quantitative analytics above are fully functional without the model.'; }
+  if (ai_insight) {
+    aiEl.className = 'ai-box';
+    aiEl.innerHTML = `<div style="white-space:pre-wrap;line-height:1.6;font-size:0.82rem">${ai_insight}</div>`;
+  } else {
+    aiEl.className = 'ai-box';
+    aiEl.innerHTML = `<p style="color:var(--muted);margin-bottom:10px">AI-powered portfolio analysis. Click to generate.</p><button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Generate AI Insight</button>`;
+  }
 
   // Holdings table — with total return, dividends, tax, rsi label
   const tbody = document.getElementById('holdingsTable').querySelector('tbody');
