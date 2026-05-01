@@ -94,12 +94,12 @@ class FinGPTClient:
     @property
     def model_name(self) -> str:
         if self._claude_available:
-            return f"Claude Sonnet 4.6 — NYU Gateway"
+            return "Veris AI"
         if self._ollama_available:
-            return f"Gemma 4 ({OLLAMA_MODEL}) — local"
+            return "Veris AI"
         if self._available:
-            return "FinGPT (Colab) — remote"
-        return "offline"
+            return "Veris AI"
+        return "Veris AI (offline)"
 
     async def generate_insight(self, context: str) -> dict:
         if self._claude_available:
