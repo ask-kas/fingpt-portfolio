@@ -307,10 +307,10 @@
     background: rgba(45,184,122,0.06);
     border: 1px solid rgba(45,184,122,0.15);
     border-radius: 10px; padding: 18px; font-size: 0.9rem;
-    white-space: pre-wrap; line-height: 1.7;
+    line-height: 1.7;
   }
   .ai-box.unavailable { opacity: 0.5; font-style: italic; }
-  .ai-md { font-size: 0.82rem; line-height: 1.7; }
+  .ai-md { font-size: 0.82rem; line-height: 1.7; white-space: normal; }
   .ai-md h1, .ai-md h2, .ai-md h3 { color: var(--text); margin: 16px 0 8px; }
   .ai-md h2 { font-size: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
   .ai-md h3 { font-size: 0.9rem; }
@@ -323,6 +323,20 @@
   .ai-md th { background: var(--surface2); font-weight: 600; }
   .ai-md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
   .ai-md code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 0.78rem; }
+  .ai-report { position: relative; }
+  .ai-report-body { transition: max-height 0.25s ease; }
+  .ai-report.collapsed .ai-report-body { max-height: 520px; overflow: hidden; }
+  .ai-report.collapsed::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: 48px; height: 90px;
+    background: linear-gradient(to bottom, rgba(18,48,30,0), rgba(18,48,30,0.96));
+    pointer-events: none;
+  }
+  .ai-toggle {
+    margin-top: 14px; border: 1px solid rgba(45,184,122,0.35); background: rgba(45,184,122,0.10);
+    color: var(--text); border-radius: 6px; padding: 8px 12px; font-size: 0.74rem; font-weight: 700;
+    cursor: pointer;
+  }
+  .ai-toggle:hover { border-color: rgba(45,184,122,0.65); background: rgba(45,184,122,0.16); }
 
   .warnings-banner {
     background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.2);
@@ -1082,7 +1096,7 @@
       <div class="panel full-width" id="sectionAI">
         <h2><span class="section-badge"></span> Veris AI Insight <span class="info-btn" onclick="showInfo('ai')">i</span></h2>
         <div id="aiInsight" class="ai-box">
-          <p style="color:var(--muted);margin-bottom:10px">AI-powered portfolio analysis using Gemma 4. Takes 1-2 minutes on first run.</p>
+          <p style="color:var(--muted);margin-bottom:10px">Full portfolio analysis with risk, optimization, stress testing, and actionable suggestions. Takes 1-2 minutes on first run.</p>
           <button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Ask Veris AI</button>
         </div>
       </div>
@@ -1957,7 +1971,7 @@ function renderResults(data) {
   const aiEl = document.getElementById('aiInsight');
   if (ai_insight) {
     aiEl.className = 'ai-box';
-    aiEl.innerHTML = `<div class="ai-md">${typeof marked !== 'undefined' ? marked.parse(ai_insight) : ai_insight}</div>`;
+    renderAiInsight(aiEl, ai_insight);
   } else {
     aiEl.className = 'ai-box';
     aiEl.innerHTML = `<p style="color:var(--muted);margin-bottom:10px">Get AI-powered analysis of your portfolio risk, performance, and actionable recommendations.</p><button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Ask Veris AI</button>`;
@@ -3348,6 +3362,36 @@ function renderMyBets() {
 }
 
 // ── On-Demand AI Insight ──────────────────────────────────
+function renderAiInsight(box, insight, footer = '') {
+  const html = typeof marked !== 'undefined' ? marked.parse(insight) : insight;
+  const footerHtml = footer ? `<div style="font-size:0.62rem;color:var(--muted);margin-top:8px">${footer}</div>` : '';
+  box.innerHTML = `
+    <div class="ai-report collapsed">
+      <div class="ai-report-body">
+        <div class="ai-md">${html}</div>
+        ${footerHtml}
+      </div>
+      <button class="ai-toggle" type="button" onclick="toggleAiInsight(this)">Show More</button>
+    </div>
+  `;
+  requestAnimationFrame(() => {
+    const report = box.querySelector('.ai-report');
+    const body = box.querySelector('.ai-report-body');
+    const toggle = box.querySelector('.ai-toggle');
+    if (body && toggle && body.scrollHeight <= 540) {
+      report.classList.remove('collapsed');
+      toggle.style.display = 'none';
+    }
+  });
+}
+
+function toggleAiInsight(btn) {
+  const report = btn.closest('.ai-report');
+  if (!report) return;
+  const collapsed = report.classList.toggle('collapsed');
+  btn.textContent = collapsed ? 'Show More' : 'Show Less';
+}
+
 async function fetchAiInsight() {
   const valid = holdings.filter(h => h.symbol && h.symbol.trim() && h.shares > 0);
   if (!valid.length) return;
@@ -3362,7 +3406,7 @@ async function fetchAiInsight() {
     });
     const d = await r.json();
     if (d.insight) {
-      box.innerHTML = `<div class="ai-md">${typeof marked !== 'undefined' ? marked.parse(d.insight) : d.insight}</div><div style="font-size:0.62rem;color:var(--muted);margin-top:8px">${'Powered by Veris AI'}</div>`;
+      renderAiInsight(box, d.insight, 'Powered by Veris analytics + Veris AI');
     } else {
       box.innerHTML = `<p style="color:var(--muted)">Veris AI is not available right now. ${d.model_name || 'Run ollama serve to enable.'}</p><button class="btn-primary" onclick="fetchAiInsight()" style="font-size:0.78rem;margin-top:8px">Retry</button>`;
     }
