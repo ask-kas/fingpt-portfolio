@@ -247,7 +247,7 @@ def calculate_max_drawdown(prices_newest_first: list[float]) -> float:
         return 0.0
     p = np.array(list(reversed(prices_newest_first)), dtype=float)
     running_peak = np.maximum.accumulate(p)
-    drawdowns = (running_peak - p) / running_peak
+    drawdowns = np.where(running_peak > 0, (running_peak - p) / running_peak, 0.0)
     return float(round(np.max(drawdowns), 4))
 
 

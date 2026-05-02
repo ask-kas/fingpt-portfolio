@@ -45,6 +45,7 @@ from backend.advanced_analytics import (
     what_if_simulation,
     regime_detection,
     data_quality_report,
+    find_arbitrage,
 )
 from backend.database import init_db, get_db, close_db, crud, schemas
 
@@ -69,12 +70,14 @@ def shutdown_db():
     close_db()
     logger.info("Database connections closed")
 
-# CORS
+# CORS — restrict to known verbs and headers; reject wildcard origins to prevent
+# combined CSRF/IDOR risk if a deployer accidentally sets CORS_ORIGINS=*.
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:8000").split(",") if o.strip() and o.strip() != "*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:8000").split(","),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins or ["http://localhost:8000"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Admin-Key"],
 )
 clients = create_clients()
 model = create_model_client()
@@ -82,6 +85,8 @@ model = create_model_client()
 yf_client = clients["yfinance"]
 fred = clients["fred"]
 sec = clients["sec"]
+polymarket = clients["polymarket"]
+kalshi = clients["kalshi"]
 
 
 # ── Request Models ──────────────────────────────────────────
@@ -112,11 +117,12 @@ class WhatIfRequest(BaseModel):
 
 @app.get("/api/health")
 async def health():
-    """Check backend health and Colab model availability."""
+    """Check backend health and AI model availability."""
     model_ok = await model.health_check()
     return {
         "backend": "ok",
         "model_server": "connected" if model_ok else "unavailable",
+        "model_name": model.model_name,
         "model_url": model.base_url,
     }
 
@@ -139,6 +145,33 @@ async def get_daily(symbol: str, days: int = 100):
     return result
 
 
+@app.get("/api/intraday/{symbol}")
+async def get_intraday(
+    symbol: str,
+    interval: str = "1m",
+    period: str | None = None,
+    prepost: bool = False,
+):
+    """Get intraday OHLCV bars for a symbol.
+
+    Query parameters:
+      interval: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h (default: 1m)
+      period:   window to fetch. Defaults are interval-aware:
+                1m → 1d, 5m → 5d, 30m → 1mo, 1h → 3mo.
+                Yahoo caps 1m at 7d and most others at 60d.
+      prepost:  include pre/post-market bars (default: false)
+    """
+    try:
+        result = await yf_client.get_intraday(
+            symbol.upper(), interval=interval, period=period, prepost=prepost
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not result:
+        raise HTTPException(404, f"No intraday data found for {symbol.upper()} ({interval})")
+    return result
+
+
 @app.get("/api/news")
 async def get_news(tickers: str = "AAPL", limit: int = 10):
     """Get financial news for given tickers (comma-separated)."""
@@ -156,6 +189,225 @@ async def get_macro():
 async def get_filings(ticker: str, filing_type: str = "10-K", count: int = 5):
     """Get SEC filings for a company."""
     return await sec.get_company_filings(ticker.upper(), filing_type, count)
+
+
+@app.get("/api/polymarket")
+async def get_polymarket(limit: int = 20):
+    """Get trending prediction markets from Polymarket."""
+    result = await polymarket.get_trending_markets(limit)
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@app.get("/api/kalshi")
+async def get_kalshi(limit: int = 20):
+    """Get trending prediction events from Kalshi."""
+    result = await kalshi.get_trending_events(limit)
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@app.get("/api/polymarket/history/{clob_token_id}")
+async def get_polymarket_history(clob_token_id: str, interval: str = "max"):
+    """Get price history for a Polymarket outcome token."""
+    if interval not in ("1h", "6h", "1d", "max", "all"):
+        raise HTTPException(400, f"Invalid interval: {interval}")
+    result = await polymarket.get_price_history(clob_token_id, interval)
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@app.get("/api/kalshi/history/{ticker}")
+async def get_kalshi_history(ticker: str, days: int = 30, series: str = ""):
+    """Get candlestick history for a Kalshi market."""
+    if not 1 <= days <= 365:
+        raise HTTPException(400, "days must be between 1 and 365")
+    result = await kalshi.get_candlesticks(ticker, days, series)
+    if "error" in result:
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@app.get("/api/predictions/analysis")
+async def predictions_analysis():
+    """AI analysis of trending prediction markets."""
+    cached = cache.get("predictions_analysis")
+    if cached is not None:
+        return cached
+
+    pm_result, kalshi_result = await asyncio.gather(
+        polymarket.get_trending_markets(),
+        kalshi.get_trending_events(),
+    )
+    pm_markets = pm_result.get("markets", [])[:10]
+    kalshi_events = kalshi_result.get("events", [])[:10]
+
+    summary = {
+        "polymarket_top": [
+            {"question": m["question"], "yes_pct": round(m["outcome_prices"][0] * 100) if m.get("outcome_prices") else 0, "volume": round(m.get("volume", 0))}
+            for m in pm_markets[:5]
+        ],
+        "kalshi_top": [
+            {"title": e["title"], "yes_pct": round(e.get("yes_price", 0) * 100), "category": e.get("category", ""), "volume": round(e.get("volume", 0))}
+            for e in kalshi_events[:5]
+        ],
+    }
+
+    ai_analysis = None
+    model_available = await model.health_check()
+    if model_available:
+        try:
+            prompt = _build_predictions_prompt(pm_markets, kalshi_events)
+            resp = await model.generate_insight(prompt)
+            ai_analysis = resp.get("insight") if resp else None
+        except Exception as e:
+            logger.warning("Model generation failed: %s", e)
+            ai_analysis = None
+
+    result = {"summary": summary, "ai_analysis": ai_analysis, "model_available": model_available}
+    cache.set("predictions_analysis", result, ttl_seconds=300)
+    return result
+
+
+@app.get("/api/arbitrage")
+async def get_arbitrage():
+    """Scan ALL markets on Polymarket and Kalshi for cross-platform arbitrage."""
+    cached = cache.get("arbitrage_scan")
+    if cached is not None:
+        return cached
+
+    pm_markets, kalshi_events = await asyncio.gather(
+        polymarket.get_all_markets(max_pages=5),
+        kalshi.get_all_events(max_pages=2),
+    )
+
+    result = find_arbitrage(pm_markets, kalshi_events)
+    cache.set("arbitrage_scan", result, ttl_seconds=300)
+    return result
+
+
+@app.get("/api/calibration")
+async def get_calibration():
+    """Calibration curve: do X% markets resolve Yes X% of the time?"""
+    cached = cache.get("calibration_data")
+    if cached is not None:
+        return cached
+
+    resolved = await polymarket.get_resolved_markets(5)
+    if not resolved:
+        raise HTTPException(503, "No resolved markets available")
+
+    buckets = {}
+    for i in range(10):
+        lo, hi = i * 0.1, (i + 1) * 0.1
+        label = f"{int(lo*100)}-{int(hi*100)}%"
+        in_bucket = [m for m in resolved if lo <= m["last_trade_price"] < hi]
+        if not in_bucket:
+            buckets[label] = {"range": label, "predicted_avg": (lo + hi) / 2, "actual_rate": None, "count": 0}
+            continue
+        actual = sum(1 for m in in_bucket if m["resolved_yes"]) / len(in_bucket)
+        pred_avg = sum(m["last_trade_price"] for m in in_bucket) / len(in_bucket)
+        buckets[label] = {"range": label, "predicted_avg": round(pred_avg, 3), "actual_rate": round(actual, 3), "count": len(in_bucket)}
+
+    brier_scores = [(m["last_trade_price"] - (1 if m["resolved_yes"] else 0)) ** 2 for m in resolved]
+    brier = round(sum(brier_scores) / len(brier_scores), 4) if brier_scores else None
+
+    result = {"buckets": list(buckets.values()), "brier_score": brier, "total_markets": len(resolved)}
+    cache.set("calibration_data", result, ttl_seconds=3600)
+    return result
+
+
+@app.get("/api/smart-money")
+async def get_smart_money():
+    """Detect abnormal volume spikes indicating informed money."""
+    cached = cache.get("smart_money")
+    if cached is not None:
+        return cached
+
+    pm_result = await polymarket.get_trending_markets(100)
+    markets = pm_result.get("markets", [])
+
+    alerts = []
+    for m in markets:
+        vol = m.get("volume", 0)
+        vol24 = m.get("volume_24hr", 0)
+        if vol <= 0 or vol24 <= 0:
+            continue
+        avg_daily = vol / 30
+        if avg_daily <= 0:
+            continue
+        spike = vol24 / avg_daily
+        if spike >= 2.0:
+            yes = m.get("outcome_prices", [0])[0] if m.get("outcome_prices") else 0
+            alerts.append({
+                "question": m.get("question", ""),
+                "slug": m.get("slug", ""),
+                "spike_ratio": round(spike, 2),
+                "volume_24hr": round(vol24),
+                "avg_daily_vol": round(avg_daily),
+                "current_yes": round(yes * 100, 1),
+                "volume": round(vol),
+            })
+
+    alerts.sort(key=lambda x: x["spike_ratio"], reverse=True)
+    result = {"alerts": alerts[:20], "total_scanned": len(markets)}
+    cache.set("smart_money", result, ttl_seconds=300)
+    return result
+
+
+@app.get("/api/market-correlations")
+async def get_market_correlations():
+    """Cross-market correlation network from price history."""
+    cached = cache.get("market_correlations")
+    if cached is not None:
+        return cached
+
+    pm_result = await polymarket.get_trending_markets(100)
+    markets = sorted(pm_result.get("markets", []), key=lambda m: m.get("volume", 0), reverse=True)[:15]
+
+    histories = {}
+    for m in markets:
+        token_id = m.get("clob_token_ids", [None])[0]
+        if not token_id:
+            continue
+        hist = await polymarket.get_price_history(token_id, "1d")
+        pts = hist.get("history", [])
+        if len(pts) >= 10:
+            histories[m.get("question", "")[:40]] = {
+                "prices": [p["price"] for p in pts],
+                "volume": m.get("volume", 0),
+                "slug": m.get("slug", ""),
+            }
+
+    labels = list(histories.keys())
+    if len(labels) < 3:
+        return {"nodes": [], "edges": [], "count": 0}
+
+    import numpy as np
+    nodes = [{"id": i, "label": l, "volume": histories[l]["volume"], "slug": histories[l]["slug"]} for i, l in enumerate(labels)]
+
+    min_len = min(len(histories[l]["prices"]) for l in labels)
+    price_matrix = np.array([histories[l]["prices"][:min_len] for l in labels])
+    returns = np.diff(price_matrix, axis=1)
+
+    edges = []
+    n = len(labels)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if np.std(returns[i]) > 1e-6 and np.std(returns[j]) > 1e-6:
+                try:
+                    corr = float(np.corrcoef(returns[i], returns[j])[0, 1])
+                except Exception:
+                    continue
+                if not np.isnan(corr) and abs(corr) > 0.3:
+                    edges.append({"source": i, "target": j, "correlation": round(corr, 3)})
+
+    result = {"nodes": nodes, "edges": edges, "count": len(labels)}
+    cache.set("market_correlations", result, ttl_seconds=1800)
+    return result
 
 
 @app.get("/api/options/{symbol}")
@@ -321,21 +573,19 @@ async def analyze(req: PortfolioRequest,
             return {"error": str(result)}
         return result
 
-    # Run FinGPT sentiment on headlines if model is available
+    # Sentiment analysis — only if Colab is available.
+    # Skipped for Ollama/Gemma (too slow, blocks analysis for minutes)
     model_available = await model.health_check()
-    if model_available and news:
-        headlines = [a["title"] for a in news if a.get("title")]
-        sentiments = await model.batch_sentiment(headlines)
-        for i, article in enumerate(news):
-            if i < len(sentiments):
-                article["fingpt_sentiment"] = sentiments[i]
-
-    # 5. AI insight
+    if model_available and getattr(model, "_available", False) and news:
+        try:
+            headlines = [a["title"] for a in news if a.get("title")]
+            sentiments = await model.batch_sentiment(headlines)
+            for i, article in enumerate(news):
+                if i < len(sentiments):
+                    article["fingpt_sentiment"] = sentiments[i]
+        except Exception as e:
+            logger.warning("Sentiment analysis failed: %s", e)
     ai_insight = None
-    if model_available:
-        context = _build_insight_prompt(analytics, macro, news)
-        insight_resp = await model.generate_insight(context)
-        ai_insight = insight_resp.get("insight") or insight_resp.get("error")
 
     response = {
         "analytics": analytics,
@@ -472,7 +722,7 @@ async def data_quality(req: PortfolioRequest):
 
     async def _fetch(sym):
         try:
-            return sym, await yf_client.get_daily(sym)
+            return sym, await yf_client.get_daily(sym, days=365)
         except Exception:
             return sym, []
 
@@ -951,72 +1201,792 @@ async def admin_overview(user_id: str = Query(..., description="Admin user ID"),
     }
 
 
-# ── Helper ──────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────
 
-def _build_insight_prompt(analytics: dict, macro: dict, news: list) -> str:
-    """Build a context string for FinGPT to generate portfolio insight.
+def _build_predictions_prompt(pm_markets: list, kalshi_events: list) -> str:
+    lines = ["Analyze these trending prediction markets and provide key insights:\n"]
+    lines.append("POLYMARKET (top markets by 24h volume):")
+    for m in pm_markets[:7]:
+        yes = round(m["outcome_prices"][0] * 100) if m.get("outcome_prices") and len(m.get("outcome_prices",[])) > 0 else 0
+        lines.append(f"  {m['question']} => {yes}% Yes (volume ${m.get('volume', 0):,.0f})")
+    lines.append("\nKALSHI (top events by volume):")
+    for e in kalshi_events[:7]:
+        yes = round(e.get("yes_price", 0) * 100)
+        lines.append(f"  [{e.get('category', '')}] {e['title']} => {yes}% Yes (volume ${e.get('volume', 0):,.0f})")
+    lines.append("\nProvide: 1) Key themes across markets 2) Markets with extreme probabilities as potential catalysts 3) Any implications for financial portfolios")
+    return "\n".join(lines)
 
-    Uses the v5 institutional metrics (HHI, Effective N, Diversification
-    Ratio, Treynor, Information Ratio) rather than the old diversification
-    score. Avoids hyphens in the plain text so the output is clean.
-    """
+
+def _build_insight_prompt(
+    analytics: dict,
+    macro: dict,
+    news: list,
+    monte_carlo: dict | None = None,
+    efficient_frontier_data: dict | None = None,
+    correlation_data: dict | None = None,
+    stress_data: dict | None = None,
+) -> str:
+    """Build a rich prompt for FinGPT to generate a fully AI-native portfolio insight."""
     summary = analytics.get("summary", {})
-    holdings_text = ""
+    weights = analytics.get("weights", {})
+
+    holdings_lines = []
     for h in analytics.get("holdings", []):
         if "error" not in h:
-            holdings_text += (
-                f"* {h['symbol']}: ${h['position_value']} "
-                f"(total return: {h.get('total_return_pct', 'NA')}%, "
-                f"vol: {h.get('volatility', 'NA')}, "
-                f"sharpe: {h.get('sharpe_ratio', 'NA')}, "
-                f"beta: {h.get('beta', 'NA')})\n"
+            sym = h["symbol"]
+            w = weights.get(sym, 0) * 100
+            holdings_lines.append(
+                f"  {sym}: {w:.1f}% weight, value ${h.get('position_value', 'NA')}, "
+                f"return {h.get('total_return_pct', 'NA')}%, "
+                f"volatility {h.get('volatility', 'NA')}, "
+                f"sharpe {h.get('sharpe_ratio', 'NA')}, "
+                f"beta {h.get('beta', 'NA')}, "
+                f"RSI {h.get('rsi_14', 'NA')} ({h.get('rsi_label', 'NA')}), "
+                f"max drawdown {h.get('max_drawdown', 'NA')}%"
             )
+    holdings_text = "\n".join(holdings_lines) or "  No valid holdings."
 
-    macro_text = ""
+    macro_lines = []
     for key, val in macro.items():
         if isinstance(val, dict) and "value" in val:
-            unit = val.get("unit", "")
-            macro_text += f"* {key}: {val['value']} {unit} (as of {val['date']})\n"
+            macro_lines.append(f"  {key}: {val['value']} {val.get('unit', '')} (as of {val.get('date', 'NA')})")
+    macro_text = "\n".join(macro_lines) or "  No macro data."
 
-    headlines = "\n".join(f"* {a['title']}" for a in news[:5] if a.get("title"))
+    headlines = "\n".join(f"  - {a['title']}" for a in news[:5] if a.get("title")) or "  No recent headlines."
+
+    risk_lines = []
+    if isinstance(monte_carlo, dict) and not monte_carlo.get("error"):
+        risk_lines += [
+            f"  30-day VaR 95%: {monte_carlo.get('var_95', 'NA')}% (${monte_carlo.get('var_95_dollar', 'NA')})",
+            f"  30-day CVaR 95%: {monte_carlo.get('cvar_95', 'NA')}% (${monte_carlo.get('cvar_95_dollar', 'NA')})",
+            f"  Expected 30-day return (simulation): {monte_carlo.get('expected_return', 'NA')}%",
+        ]
+    if isinstance(stress_data, dict) and not stress_data.get("error"):
+        scenarios = stress_data.get("scenarios", [])
+        if scenarios:
+            worst = min(scenarios, key=lambda s: s.get("portfolio_return_pct", 0))
+            risk_lines.append(f"  Worst historical stress scenario: {worst.get('name')} => {worst.get('portfolio_return_pct', 'NA')}% (${worst.get('portfolio_loss_dollar', 'NA')})")
+    risk_text = "\n".join(risk_lines) or "  No risk data available."
+
+    frontier_text = ""
+    if isinstance(efficient_frontier_data, dict) and not efficient_frontier_data.get("error"):
+        ms = efficient_frontier_data.get("max_sharpe", {})
+        mv = efficient_frontier_data.get("min_volatility", {})
+        cur = efficient_frontier_data.get("current", {})
+        opt_weights = ", ".join(f"{s} {w:.0f}%" for s, w in sorted((ms.get("weights") or {}).items(), key=lambda x: x[1], reverse=True)[:3])
+        frontier_text = (
+            f"\nOptimization (Efficient Frontier):\n"
+            f"  Current: return {cur.get('return', 'NA')}%, volatility {cur.get('volatility', 'NA')}%\n"
+            f"  Max-Sharpe target: return {ms.get('return', 'NA')}%, volatility {ms.get('volatility', 'NA')}%, sharpe {ms.get('sharpe', 'NA')} — weights: {opt_weights}\n"
+            f"  Min-Volatility target: return {mv.get('return', 'NA')}%, volatility {mv.get('volatility', 'NA')}%"
+        )
+
+    corr_text = ""
+    if isinstance(correlation_data, dict) and not correlation_data.get("error"):
+        corr_text = f"\nCorrelation: avg pairwise {correlation_data.get('avg_correlation', 'NA')} — {correlation_data.get('interpretation', '')}"
 
     tariff = summary.get("tariff_exposure") or {}
-    tariff_line = (
-        f"AAPL tariff drag: {tariff.get('portfolio_impact_pct')} percent "
-        f"(rate {tariff.get('tariff_rate_pct')}, pass through {tariff.get('pass_through_pct')})"
-    ) if tariff else "AAPL tariff drag: not applicable"
+    tariff_text = (
+        f"\nTariff exposure: {tariff.get('portfolio_impact_pct', 'NA')}% portfolio impact "
+        f"(rate {tariff.get('tariff_rate_pct', 'NA')}%, pass-through {tariff.get('pass_through_pct', 'NA')}%)"
+        if tariff else ""
+    )
 
-    return f"""Portfolio Summary:
-Total Value: ${summary.get('total_value', 'NA')}
-Total Return: {summary.get('total_return_pct', 'NA')} percent (dividend adjusted)
-Annualized Volatility: {summary.get('portfolio_volatility', 'NA')}
-Sharpe Ratio: {summary.get('portfolio_sharpe', 'NA')}
-Sortino Ratio: {summary.get('portfolio_sortino', 'NA')}
-Treynor Ratio: {summary.get('portfolio_treynor', 'NA')}
-Information Ratio: {summary.get('portfolio_information_ratio', 'NA')}
-Portfolio Beta vs SPY: {summary.get('portfolio_beta', 'NA')}
-Jensen Alpha: {summary.get('portfolio_alpha', 'NA')}
-HHI Concentration: {summary.get('hhi', 'NA')}
-Effective N Holdings: {summary.get('effective_n', 'NA')}
-Diversification Ratio: {summary.get('diversification_ratio', 'NA')}
-{tariff_line}
+    return f"""[INST] You are a senior portfolio analyst at a hedge fund. A client has shared their portfolio data. Write a concise, professional analysis in plain English. Use the numbers. Do not repeat the data back — go straight into your assessment.
 
-Holdings:
-{holdings_text}
-Macro Indicators:
-{macro_text}
-Recent Headlines:
-{headlines}
+Portfolio value: ${summary.get('total_value', 'NA')} | Return: {summary.get('total_return_pct', 'NA')}% | Volatility: {summary.get('portfolio_volatility', 'NA')} | Sharpe: {summary.get('portfolio_sharpe', 'NA')} | Sortino: {summary.get('portfolio_sortino', 'NA')} | Beta: {summary.get('portfolio_beta', 'NA')} | Alpha: {summary.get('portfolio_alpha', 'NA')}% | HHI: {summary.get('hhi', 'NA')} | Effective N: {summary.get('effective_n', 'NA')}
 
-Based on the above data, provide a brief investment insight and risk assessment focused on the concentration, beta exposure, and tail risk."""
+Holdings: {" | ".join(holdings_lines[:5])}
+
+Risk: {" | ".join(risk_lines[:3])}
+{frontier_text}{corr_text}
+
+Macro: {" | ".join(macro_lines[:4])}
+News: {" | ".join(f'{a["title"]}' for a in news[:3] if a.get("title"))}
+
+Write 3-4 paragraphs: (1) overall verdict on this portfolio, (2) the biggest risk right now and why it matters, (3) which holdings are working and which are dragging, (4) the top 2 actions the investor should take. Be direct. [/INST]
+
+This portfolio"""
+
+
+def _clean_model_output(text: str) -> str:
+    """Strip Llama-2-chat prompt echoes and truncate at a complete sentence."""
+    import re
+
+    # Strip the [INST]...[/INST] block if the model echoes it back
+    text = re.sub(r'\[INST\].*?\[/INST\]\s*', '', text, flags=re.DOTALL).strip()
+
+    # Remove any remaining prompt-data lines that leaked through
+    clean = []
+    data_echo = re.compile(
+        r'Holdings:|Paragraph \d|^\s*Portfolio:|^\s*Risk:|^\s*Macro:|^\s*News:|^\s*Optimal',
+        re.IGNORECASE,
+    )
+    for line in text.splitlines():
+        if data_echo.match(line.strip()):
+            continue
+        clean.append(line)
+    text = "\n".join(clean).strip()
+
+    # Truncate at the last complete sentence to avoid mid-word cutoffs
+    for end_char in ('. ', '.\n', '!', '?'):
+        pos = text.rfind(end_char)
+        if pos > len(text) // 2:
+            text = text[:pos + 1].strip()
+            break
+
+    return text
+
+
+def _fmt_money(value, default: str = "NA") -> str:
+    try:
+        amount = float(value)
+        if amount < 0:
+            return f"-${abs(amount):,.2f}"
+        return f"${amount:,.2f}"
+    except Exception:
+        return default
+
+
+def _fmt_pct(value, default: str = "NA", already_pct: bool = False) -> str:
+    try:
+        pct = float(value) if already_pct else float(value) * 100
+        return f"{pct:.2f}%"
+    except Exception:
+        return default
+
+
+def _fmt_num(value, digits: int = 2, default: str = "NA") -> str:
+    try:
+        return f"{float(value):.{digits}f}"
+    except Exception:
+        return default
+
+
+def _portfolio_recommendations(analytics: dict, monte_carlo: dict, efficient_frontier_data: dict) -> list[str]:
+    summary = analytics.get("summary", {})
+    holdings = [h for h in analytics.get("holdings", []) if not h.get("error")]
+    weights = analytics.get("weights", {})
+    recs: list[str] = []
+    total_value = float(summary.get("total_value") or 0)
+
+    if weights:
+        largest_symbol, largest_weight = max(weights.items(), key=lambda item: item[1])
+        if largest_weight > 0.40:
+            target_weight = 0.35
+            trim_value = max(0, (largest_weight - target_weight) * total_value)
+            recs.append(
+                f"Reduce {largest_symbol} from {largest_weight * 100:.1f}% toward a 35% cap (trim ~{_fmt_money(trim_value)}). "
+                f"A single stock above 40% means one bad earnings report or regulatory headline can materially damage the whole portfolio — "
+                f"concentration risk this high is rarely compensated by extra return."
+            )
+
+    hhi = summary.get("hhi")
+    effective_n = summary.get("effective_n")
+    if hhi is not None and effective_n is not None:
+        try:
+            if float(hhi) > 0.30 or float(effective_n) < 4:
+                recs.append(
+                    f"Add new capital to uncorrelated positions rather than existing holdings. "
+                    f"HHI is {_fmt_num(hhi, 3)} and effective N is {_fmt_num(effective_n, 2)} — "
+                    f"meaning the portfolio behaves like only {_fmt_num(effective_n, 2)} equal-weight stocks. "
+                    f"True diversification requires holdings that move independently; adding more of the same names does not help."
+                )
+        except Exception:
+            pass
+
+    beta = summary.get("portfolio_beta")
+    if beta is not None:
+        try:
+            volatility = float(summary.get("portfolio_volatility") or 0)
+            if float(beta) > 1.10:
+                recs.append(
+                    f"Lower market beta by moving part of the highest-beta holding into lower-beta equity, "
+                    f"short-duration Treasury, or cash. Portfolio beta is {_fmt_num(beta, 2)}."
+                )
+            elif float(beta) < 0.80 and volatility > 0.30:
+                recs.append(
+                    f"Do not mistake low SPY beta for low risk. Portfolio beta is only {_fmt_num(beta, 2)}, "
+                    f"but annualized volatility is {_fmt_pct(volatility)}, so the risk is coming from idiosyncratic "
+                    f"or non-equity exposure rather than broad-market sensitivity."
+                )
+            elif float(beta) < 0.80:
+                recs.append(
+                    f"If growth is the goal, consider adding measured equity exposure. Portfolio beta is "
+                    f"{_fmt_num(beta, 2)}, below broad-market sensitivity."
+                )
+        except Exception:
+            pass
+
+    sharpe = summary.get("portfolio_sharpe")
+    alpha = summary.get("portfolio_alpha")
+    if sharpe is not None:
+        try:
+            if float(sharpe) < 0:
+                negative = [
+                    h for h in holdings
+                    if h.get("sharpe_ratio") is not None and float(h.get("sharpe_ratio") or 0) < 0
+                ]
+                names = ", ".join(h.get("symbol") for h in negative[:3]) or "the negative-Sharpe positions"
+                recs.append(
+                    f"Do not judge this only by the big gain. Risk-adjusted performance is weak: portfolio Sharpe is "
+                    f"{_fmt_num(sharpe, 2)} and Jensen alpha is {_fmt_pct(alpha)}. Review {names} first."
+                )
+        except Exception:
+            pass
+
+    overbought = [
+        h for h in holdings
+        if h.get("rsi_14") is not None and float(h.get("rsi_14") or 0) >= 70
+    ]
+    if overbought:
+        names = ", ".join(f"{h.get('symbol')} RSI {_fmt_num(h.get('rsi_14'), 1)}" for h in overbought[:3])
+        recs.append(
+            f"Avoid chasing the hottest winner immediately. {names} is overbought, so use staged buys or wait for a pullback."
+        )
+
+    if isinstance(monte_carlo, dict):
+        cvar_95 = monte_carlo.get("cvar_95")
+        if cvar_95 is not None:
+            try:
+                if float(cvar_95) < -10:
+                    recs.append(
+                        f"Set a downside-risk rule before adding more exposure. The 30-day 95% CVaR is "
+                        f"{_fmt_pct(cvar_95, already_pct=True)}, or about {_fmt_money(monte_carlo.get('cvar_95_dollar'))}, "
+                        f"in the simulated bad-tail case."
+                    )
+            except Exception:
+                pass
+
+    if isinstance(efficient_frontier_data, dict):
+        max_sharpe = efficient_frontier_data.get("max_sharpe", {})
+        opt_weights = max_sharpe.get("weights", {})
+        if opt_weights:
+            ordered = sorted(opt_weights.items(), key=lambda item: item[1], reverse=True)
+            top_weights = ", ".join(f"{symbol} {weight:.0f}%" for symbol, weight in ordered[:3])
+            recs.append(
+                f"Use the efficient-frontier target as a reference, not an autopilot trade: max-Sharpe weights are "
+                f"{top_weights}, with expected return {_fmt_pct(max_sharpe.get('return'), already_pct=True)} "
+                f"and volatility {_fmt_pct(max_sharpe.get('volatility'), already_pct=True)}."
+            )
+
+    tax_candidates = []
+    for h in holdings:
+        tax = h.get("tax") or {}
+        if tax.get("type") == "loss":
+            tax_candidates.append(h.get("symbol"))
+    if tax_candidates:
+        recs.append(
+            f"Review tax-loss harvesting for {', '.join(tax_candidates)} before making replacement trades."
+        )
+
+    if not recs:
+        recs.append("Keep the current core, but rebalance periodically so no single position drifts far above target weight.")
+        recs.append("Add new capital to the most underweight or lowest-correlation holding rather than chasing the recent winner.")
+        recs.append("Use a written risk limit for maximum drawdown and 30-day VaR before increasing position sizes.")
+
+    return recs[:6]
+
+
+def _portfolio_diagnosis(analytics: dict, monte_carlo: dict, efficient_frontier_data: dict) -> list[str]:
+    summary = analytics.get("summary", {})
+    holdings = [h for h in analytics.get("holdings", []) if not h.get("error")]
+    weights = analytics.get("weights", {})
+    if not holdings:
+        return ["There are no valid holdings to diagnose yet."]
+
+    largest = max(holdings, key=lambda h: weights.get(h.get("symbol"), 0))
+    best_return = max(holdings, key=lambda h: h.get("total_return_pct", float("-inf")))
+    weakest_sharpe = min(holdings, key=lambda h: h.get("sharpe_ratio", float("inf")))
+    highest_beta = max(holdings, key=lambda h: h.get("beta", float("-inf")))
+    total_return = float(summary.get("total_return_pct") or 0)
+    sharpe = float(summary.get("portfolio_sharpe") or 0)
+    beta = float(summary.get("portfolio_beta") or 0)
+    effective_n = float(summary.get("effective_n") or 0)
+
+    verdict = "strong absolute gains but weak risk-adjusted quality"
+    if total_return < 0:
+        verdict = "negative absolute returns — the portfolio lost money in real terms"
+    elif sharpe > 1:
+        verdict = "strong performance both in raw returns and on a risk-adjusted basis"
+    elif sharpe > 0:
+        verdict = "positive returns, but you are not being compensated enough for the risk you are taking"
+
+    sharpe_explain = (
+        "negative — meaning a savings account would have beaten this portfolio on a risk-adjusted basis" if sharpe < 0
+        else "below average — returns exist but not enough reward per unit of risk" if sharpe < 1
+        else "good — solid reward per unit of risk" if sharpe < 2
+        else "excellent — strong reward per unit of risk"
+    )
+
+    beta_explain = (
+        f"above 1 — for every 1% the S&P 500 moves, this portfolio typically moves {_fmt_num(beta, 2)}%, amplifying both gains and losses"
+        if beta > 1.05
+        else f"below 1 — the portfolio moves less than the market ({_fmt_num(beta, 2)}x), which reduces both upside and downside"
+        if beta < 0.95
+        else "close to 1 — the portfolio tracks the broad market closely"
+    )
+
+    eff_n_explain = (
+        f"Despite holding {len(holdings)} stock{'s' if len(holdings) != 1 else ''}, the portfolio behaves like only "
+        f"{_fmt_num(effective_n, 1)} equally-weighted positions — because concentration in a few names dominates."
+        if effective_n < len(holdings) * 0.6
+        else f"The portfolio's {len(holdings)} holdings provide reasonably balanced exposure, equivalent to {_fmt_num(effective_n, 1)} equal-weight positions."
+    )
+
+    lines = [
+        f"**Overall verdict:** {verdict}. Total return is {_fmt_pct(total_return, already_pct=True)}, "
+        f"but raw returns alone do not tell the full story — see the risk-adjusted metrics below.",
+
+        f"**Sharpe ratio: {_fmt_num(sharpe, 2)}** — this measures how much return you earn per unit of risk. "
+        f"It is currently {sharpe_explain}. The scale: below 0 = worse than cash, 0–1 = below average, 1–2 = good, 2+ = excellent.",
+
+        f"**Concentration: {largest.get('symbol')} is {weights.get(largest.get('symbol'), 0) * 100:.1f}% of the portfolio** "
+        f"({_fmt_money(largest.get('position_value'))}). {eff_n_explain} "
+        f"High concentration means one bad earnings report can materially hurt the whole portfolio.",
+
+        f"**Market sensitivity (beta): {_fmt_num(beta, 2)}** — {beta_explain}.",
+
+        f"**Best performer: {best_return.get('symbol')}** at {_fmt_pct(best_return.get('total_return_pct'), already_pct=True)} total return. "
+        f"**Weakest risk-adjusted holding: {weakest_sharpe.get('symbol')}** with Sharpe {_fmt_num(weakest_sharpe.get('sharpe_ratio'), 2)} "
+        f"— this position is taking on risk without delivering proportional returns. "
+        f"**Most market-sensitive: {highest_beta.get('symbol')}** (beta {_fmt_num(highest_beta.get('beta'), 2)}) — moves the most when the market swings.",
+    ]
+
+    if isinstance(monte_carlo, dict) and not monte_carlo.get("error"):
+        cvar = monte_carlo.get("cvar_95")
+        cvar_dollar = monte_carlo.get("cvar_95_dollar")
+        lines.append(
+            f"**Tail risk (CVaR 95%): {_fmt_pct(cvar, already_pct=True)}** — "
+            f"in the worst 5% of simulated 30-day periods, the average loss would be {_fmt_money(cvar_dollar)}. "
+            f"This is not a hypothetical — it is modeled from your actual holdings' volatility and correlations. "
+            f"CVaR goes beyond VaR by averaging the entire bad tail, not just the threshold."
+        )
+
+    if isinstance(efficient_frontier_data, dict) and not efficient_frontier_data.get("error"):
+        max_sharpe = efficient_frontier_data.get("max_sharpe", {})
+        opt_weights = max_sharpe.get("weights") or {}
+        if opt_weights:
+            top = ", ".join(f"{symbol} {weight:.0f}%" for symbol, weight in sorted(opt_weights.items(), key=lambda x: x[1], reverse=True)[:3])
+            ms = max_sharpe.get("sharpe")
+            lines.append(
+                f"**Efficient frontier gap:** The Markowitz optimizer finds that a mix of {top} would maximize the Sharpe ratio "
+                f"(target Sharpe: {_fmt_num(ms, 2)} vs current {_fmt_num(sharpe, 2)}). "
+                f"This is a mathematical reference point — use it as a directional signal for rebalancing, not a trade order."
+            )
+
+    return lines
+
+
+def _build_full_portfolio_report(
+    analytics: dict,
+    monte_carlo: dict,
+    efficient_frontier_data: dict,
+    correlation_data: dict,
+    stress_data: dict,
+    ai_note: str | None = None,
+) -> str:
+    summary = analytics.get("summary", {})
+    holdings = [h for h in analytics.get("holdings", []) if not h.get("error")]
+    weights = analytics.get("weights", {})
+
+    lines = [
+        "## Portfolio Diagnosis",
+        "",
+    ]
+    lines.extend(f"- {line}" for line in _portfolio_diagnosis(analytics, monte_carlo, efficient_frontier_data))
+    lines.extend([
+        "",
+        "### What I Would Do Next",
+    ])
+    for idx, rec in enumerate(_portfolio_recommendations(analytics, monte_carlo, efficient_frontier_data), start=1):
+        lines.append(f"{idx}. {rec}")
+
+    # ── Portfolio Snapshot ──────────────────────────────────
+    sharpe_val = float(summary.get("portfolio_sharpe") or 0)
+    sortino_val = float(summary.get("portfolio_sortino") or 0)
+    beta_val = float(summary.get("portfolio_beta") or 0)
+    alpha_val = float(summary.get("portfolio_alpha") or 0)
+    vol_val = float(summary.get("portfolio_volatility") or 0)
+    hhi_val = float(summary.get("hhi") or 0)
+    eff_n_val = float(summary.get("effective_n") or 0)
+
+    sharpe_label = (
+        "worse than cash" if sharpe_val < 0
+        else "below average" if sharpe_val < 1
+        else "good" if sharpe_val < 2
+        else "excellent"
+    )
+    beta_label = (
+        f"amplifies market moves by {beta_val:.2f}x — higher risk and higher reward than the index"
+        if beta_val > 1.05
+        else f"dampens market moves to {beta_val:.2f}x — less volatile than the index"
+        if beta_val < 0.95
+        else "tracks the market closely"
+    )
+    alpha_label = (
+        f"positive — the portfolio beat a passive SPY strategy by {_fmt_pct(alpha_val)} annually after accounting for market risk"
+        if alpha_val > 0
+        else f"negative — the portfolio underperformed a passive SPY strategy by {_fmt_pct(abs(alpha_val))} annually"
+    )
+    hhi_label = (
+        "very concentrated — one or two names dominate" if hhi_val > 0.5
+        else "moderately concentrated — a few positions drive returns" if hhi_val > 0.25
+        else "reasonably diversified" if hhi_val > 0.10
+        else "well diversified"
+    )
+
+    lines.extend([
+        "",
+        "### Portfolio Snapshot",
+        f"- **Total value:** {_fmt_money(summary.get('total_value'))} (cost basis: {_fmt_money(summary.get('total_cost'))})",
+        f"- **Holding-period return:** {_fmt_pct(summary.get('total_return_pct'), already_pct=True)} — "
+        f"this is the raw gain/loss since purchase, including dividends. It does not account for risk.",
+        f"- **Annualized volatility:** {_fmt_pct(summary.get('portfolio_volatility'))} — "
+        f"how much the portfolio's value typically swings in a year. "
+        f"{'High — expect large month-to-month swings.' if vol_val > 0.30 else 'Moderate.' if vol_val > 0.15 else 'Low — relatively stable.'}",
+        f"- **Beta vs S&P 500:** {_fmt_num(beta_val, 2)} — {beta_label}.",
+        f"- **Sharpe ratio:** {_fmt_num(sharpe_val, 2)} ({sharpe_label}) — "
+        f"measures return per unit of risk. Scale: <0 = worse than cash, 0–1 = below average, 1–2 = good, 2+ = excellent.",
+        f"- **Sortino ratio:** {_fmt_num(sortino_val, 2)} — "
+        f"like Sharpe but only penalises downside volatility (bad days). "
+        f"{'Sortino is meaningfully higher than Sharpe, meaning most of the volatility is on the upside — that is a good sign.' if sortino_val > sharpe_val * 1.3 else 'Close to the Sharpe ratio, meaning volatility is fairly symmetric.'}",
+        f"- **Jensen alpha:** {_fmt_pct(alpha_val)} — {alpha_label}.",
+        f"- **HHI concentration index:** {_fmt_num(hhi_val, 3)} ({hhi_label}). "
+        f"Scale: 0 = perfectly spread, 1 = single stock. Effective positions: {_fmt_num(eff_n_val, 1)} "
+        f"(the number of equal-weight stocks that would produce the same concentration).",
+        "",
+        "### Holding-Level Read",
+        "*Each row: weight in portfolio, return since purchase, how risky (beta & volatility), risk-adjusted quality (Sharpe), and momentum signal (RSI).*",
+    ])
+
+    for h in holdings:
+        weight = weights.get(h.get("symbol"), 0) * 100
+        h_sharpe = float(h.get("sharpe_ratio") or 0)
+        h_beta = float(h.get("beta") or 0)
+        h_rsi = h.get("rsi_14")
+        rsi_note = ""
+        if h_rsi is not None:
+            try:
+                rsi_f = float(h_rsi)
+                rsi_note = " — momentum signal: overbought, potential pullback ahead" if rsi_f >= 70 else " — momentum signal: oversold, potential bounce" if rsi_f <= 30 else " — momentum signal: neutral"
+            except Exception:
+                pass
+        sharpe_note = (
+            " (drag — taking risk without reward)" if h_sharpe < 0
+            else " (below average)" if h_sharpe < 1
+            else " (good)" if h_sharpe < 2
+            else " (excellent)"
+        )
+        lines.append(
+            f"- **{h.get('symbol')}** — {weight:.1f}% of portfolio ({_fmt_money(h.get('position_value'))}). "
+            f"Return: {_fmt_pct(h.get('total_return_pct'), already_pct=True)}. "
+            f"Beta: {_fmt_num(h_beta, 2)} ({'more' if h_beta > 1 else 'less'} volatile than market). "
+            f"Volatility: {_fmt_pct(h.get('volatility'))}. "
+            f"Sharpe: {_fmt_num(h_sharpe, 2)}{sharpe_note}. "
+            f"RSI: {h.get('rsi_14', 'NA')}{rsi_note}."
+        )
+
+    lines.extend(["", "### Risk Assessment"])
+    lines.append(
+        "*Risk is measured two ways: VaR (the loss threshold you won't exceed 95% of the time) "
+        "and CVaR (the average loss in the worst 5% of scenarios — always worse than VaR).*"
+    )
+    if isinstance(monte_carlo, dict) and not monte_carlo.get("error"):
+        var95 = monte_carlo.get("var_95")
+        cvar95 = monte_carlo.get("cvar_95")
+        lines.extend([
+            f"- **30-day VaR 95%: {_fmt_pct(var95, already_pct=True)}** ({_fmt_money(monte_carlo.get('var_95_dollar'))}) — "
+            f"95% of simulated months, the loss stays within this bound.",
+            f"- **30-day CVaR 95%: {_fmt_pct(cvar95, already_pct=True)}** ({_fmt_money(monte_carlo.get('cvar_95_dollar'))}) — "
+            f"in the worst 5% of months, the *average* loss is this figure. This is the number risk managers care about most.",
+            f"- **Expected 30-day return (simulation):** {_fmt_pct(monte_carlo.get('expected_return'), already_pct=True)} — "
+            f"the median outcome across 10,000 Monte Carlo paths.",
+        ])
+    if isinstance(stress_data, dict) and not stress_data.get("error"):
+        reverse = stress_data.get("reverse_stress_test", {})
+        if reverse:
+            lines.append(f"- **Reverse stress test:** {reverse.get('explanation')} — this identifies what market shock would wipe out a target percentage of the portfolio.")
+        scenarios = stress_data.get("scenarios", [])
+        if scenarios:
+            worst = min(scenarios, key=lambda s: s.get("portfolio_return_pct", 0))
+            lines.append(
+                f"- **Worst historical scenario: {worst.get('name')}** — "
+                f"in an equivalent crisis, this portfolio would have lost "
+                f"{_fmt_pct(worst.get('portfolio_return_pct'), already_pct=True)} "
+                f"({_fmt_money(worst.get('portfolio_loss_dollar'))}) based on current weights and historical drawdowns."
+            )
+
+    lines.extend(["", "### Diversification & Correlation"])
+    lines.append(
+        "*Correlation measures how much your holdings move together. A correlation of +1 means they move in lockstep (no diversification benefit). "
+        "A correlation of 0 means they are independent. A correlation of -1 means they are a perfect hedge.*"
+    )
+    if isinstance(correlation_data, dict) and not correlation_data.get("error"):
+        avg_corr = float(correlation_data.get("avg_correlation") or 0)
+        corr_label = (
+            "high — holdings are moving together, limiting diversification benefit"
+            if avg_corr > 0.7
+            else "moderate — some diversification benefit, but significant co-movement remains"
+            if avg_corr > 0.4
+            else "low — holdings are relatively independent, providing genuine diversification"
+        )
+        lines.append(
+            f"- **Average pairwise correlation: {_fmt_num(avg_corr, 3)}** ({corr_label}). "
+            f"{correlation_data.get('interpretation', '')}"
+        )
+    lines.append(
+        f"- **HHI: {_fmt_num(hhi_val, 3)}, Effective N: {_fmt_num(eff_n_val, 2)}** — "
+        f"lower HHI and higher effective N = better diversification. "
+        f"A perfectly equal 10-stock portfolio would have HHI ≈ 0.10 and effective N = 10."
+    )
+
+    lines.extend(["", "### Optimization View"])
+    lines.append(
+        "*The efficient frontier shows the mathematically optimal portfolios — the best return achievable for each level of risk. "
+        "Your portfolio likely sits below this curve; the gap shows the cost of current allocation choices.*"
+    )
+    if isinstance(efficient_frontier_data, dict) and not efficient_frontier_data.get("error"):
+        current = efficient_frontier_data.get("current", {})
+        max_sharpe = efficient_frontier_data.get("max_sharpe", {})
+        min_vol = efficient_frontier_data.get("min_volatility", {})
+        lines.extend([
+            f"- **Your portfolio today:** expected return {_fmt_pct(current.get('return'), already_pct=True)}, "
+            f"volatility {_fmt_pct(current.get('volatility'), already_pct=True)}.",
+            f"- **Max-Sharpe portfolio** (best risk-adjusted mix): expected return {_fmt_pct(max_sharpe.get('return'), already_pct=True)}, "
+            f"volatility {_fmt_pct(max_sharpe.get('volatility'), already_pct=True)}, Sharpe {_fmt_num(max_sharpe.get('sharpe'), 2)}. "
+            f"This is the target allocation the optimizer recommends — treat it as directional, not prescriptive.",
+            f"- **Minimum-volatility portfolio** (lowest-risk mix): expected return {_fmt_pct(min_vol.get('return'), already_pct=True)}, "
+            f"volatility {_fmt_pct(min_vol.get('volatility'), already_pct=True)}. "
+            f"Consider this if preserving capital is the priority over maximising returns.",
+        ])
+
+    tariff = summary.get("tariff_exposure") or {}
+    if tariff:
+        lines.extend([
+            "",
+            "### Special Exposure Notes",
+            f"- AAPL tariff scenario impact: {_fmt_pct(tariff.get('portfolio_impact_pct'), already_pct=True)} "
+            f"portfolio impact under the configured assumptions.",
+        ])
+
+    if ai_note:
+        clean_note = ai_note.strip()
+        if clean_note and "Unable to generate" not in clean_note:
+            lines.extend(["", "### Veris AI Analyst Note", clean_note])
+
+    return "\n".join(lines)
 
 
 @app.post("/api/cache/clear")
-async def clear_cache():
-    """Clear the in-memory data cache."""
+async def clear_cache(admin_key: str = Query(..., description="ADMIN_KEY required")):
+    """Clear the in-memory data cache. Requires ADMIN_KEY to prevent low-grade DoS."""
+    expected = os.getenv("ADMIN_KEY")
+    if not expected:
+        raise HTTPException(503, "ADMIN_KEY not configured")
+    if not hmac.compare_digest(admin_key, expected):
+        raise HTTPException(403, "Invalid admin key")
     cache.clear()
-    logger.info("Cache cleared")
+    logger.info("Cache cleared by admin")
     return {"status": "ok", "message": "Cache cleared"}
+
+
+
+# ── On-Demand AI Insight ────────────────────────────────
+
+@app.post("/api/ai-insight")
+async def ai_insight_endpoint(req: PortfolioRequest):
+    """Fully AI-native portfolio insight — the model reads all data and writes the entire report."""
+    model_available = await model.health_check()
+
+    holdings = [h.model_dump() for h in req.holdings]
+    for h in holdings:
+        h["symbol"] = yf_client.normalize_symbol(h["symbol"])
+    symbols = [h["symbol"] for h in holdings]
+
+    async def _fetch(sym):
+        try:
+            return sym, await yf_client.get_daily(sym)
+        except Exception:
+            return sym, []
+
+    fetch_syms = symbols + (["SPY"] if "SPY" not in symbols else [])
+    price_results, news, macro = await asyncio.gather(
+        asyncio.gather(*[_fetch(s) for s in fetch_syms]),
+        yf_client.get_news(symbols, limit=8),
+        fred.get_macro_snapshot(),
+        return_exceptions=False,
+    )
+
+    daily_data = {sym: data for sym, data in price_results}
+    market_data = daily_data.pop("SPY", []) if "SPY" not in symbols else None
+
+    rf = await _current_risk_free_rate()
+    analytics = analyze_portfolio(holdings, daily_data, rf, market_data)
+
+    def _safe(r):
+        return {} if isinstance(r, Exception) else r
+
+    mc_result, ef_result, corr_result, stress_result = map(_safe, await asyncio.gather(
+        asyncio.to_thread(monte_carlo_simulation, daily_data, holdings),
+        asyncio.to_thread(efficient_frontier, daily_data, holdings, rf),
+        asyncio.to_thread(correlation_matrix, daily_data, symbols),
+        asyncio.to_thread(stress_test, daily_data, holdings, None, market_data),
+        return_exceptions=True,
+    ))
+
+    # Build a compact prompt — Llama-2-7B has a 700-token output cap,
+    # so keeping the input short leaves maximum room for real analysis.
+    summary = analytics.get("summary", {})
+    weights_map = analytics.get("weights", {})
+    holdings_compact = " | ".join(
+        f"{h.get('symbol')} {weights_map.get(h.get('symbol'), 0)*100:.0f}% "
+        f"(ret {h.get('total_return_pct','NA')}% sharpe {h.get('sharpe_ratio','NA')} beta {h.get('beta','NA')} RSI {h.get('rsi_14','NA')})"
+        for h in analytics.get("holdings", [])[:5] if not h.get("error")
+    )
+    cvar = mc_result.get("cvar_95", "NA") if isinstance(mc_result, dict) else "NA"
+    var95 = mc_result.get("var_95", "NA") if isinstance(mc_result, dict) else "NA"
+    ms = (ef_result.get("max_sharpe", {}) if isinstance(ef_result, dict) else {})
+    ms_weights = ", ".join(f"{s} {w:.0f}%" for s, w in sorted((ms.get("weights") or {}).items(), key=lambda x: x[1], reverse=True)[:3])
+
+    macro_lines = []
+    if isinstance(macro, dict):
+        for k, v in list(macro.items())[:4]:
+            if isinstance(v, dict) and "value" in v:
+                macro_lines.append(f"{k}: {v['value']}{v.get('unit','')}")
+    macro_compact = " | ".join(macro_lines)
+
+    news_compact = " | ".join(a["title"] for a in (news or [])[:3] if a.get("title"))
+
+    prompt = (
+        f"[INST] You are a senior portfolio analyst. Write a 3-paragraph analysis.\n\n"
+        f"Holdings: {holdings_compact}\n"
+        f"Portfolio: return {summary.get('total_return_pct','NA')}% | vol {summary.get('portfolio_volatility','NA')} | "
+        f"sharpe {summary.get('portfolio_sharpe','NA')} | sortino {summary.get('portfolio_sortino','NA')} | "
+        f"beta {summary.get('portfolio_beta','NA')} | alpha {summary.get('portfolio_alpha','NA')}% | "
+        f"HHI {summary.get('hhi','NA')} | EffN {summary.get('effective_n','NA')}\n"
+        f"Risk: VaR95 {var95}% | CVaR95 {cvar}%\n"
+        f"Optimal mix: {ms_weights}\n"
+        f"Macro: {macro_compact}\n"
+        f"News: {news_compact}\n\n"
+        f"Paragraph 1: Overall performance verdict — use the actual numbers.\n"
+        f"Paragraph 2: Biggest risk right now and why it matters.\n"
+        f"Paragraph 3: Two specific actions the investor should take.\n"
+        f"[/INST]"
+    )
+
+    if not model_available:
+        return {
+            "insight": "Veris AI is offline. Start the Colab notebook to generate an AI insight.",
+            "model_available": False,
+            "model_name": model.model_name,
+        }
+
+    try:
+        resp = await model.generate_insight(prompt)
+        raw = resp.get("insight", "") or ""
+        insight = _clean_model_output(raw) if len(raw.strip()) > 20 else "The model returned an empty response. Try again."
+    except Exception as e:
+        logger.warning("FinGPT insight failed: %s", e)
+        insight = "Failed to generate insight. Check that the Colab notebook is running."
+
+    return {"insight": insight, "model_available": model_available, "model_name": model.model_name}
+
+
+# ── AI News Summarization (AlphaSense-inspired) ────────
+
+@app.post("/api/news-digest")
+async def news_digest(req: PortfolioRequest):
+    """AI-powered news digest for portfolio holdings."""
+    holdings = [h.model_dump() for h in req.holdings]
+    symbols = [yf_client.normalize_symbol(h["symbol"]) for h in holdings]
+
+    news = await yf_client.get_news(symbols, limit=15)
+    if not news:
+        return {"digest": [], "summary": "No recent news found for your holdings."}
+
+    digest = []
+    for article in news[:10]:
+        digest.append({
+            "title": article.get("title", ""),
+            "source": article.get("source", ""),
+            "url": article.get("url", ""),
+            "tickers": article.get("tickers", []),
+            "sentiment": article.get("fingpt_sentiment", "neutral"),
+        })
+
+    model_available = await model.health_check()
+    ai_summary = None
+    if model_available and digest:
+        headlines = "\n".join([f"- {d['title']}" for d in digest[:8]])
+        prompt = f"Summarize these news headlines for portfolio with {', '.join(symbols[:5])}. Focus on investor impact. 3-4 bullet points:\n\n{headlines}"
+        try:
+            resp = await model.generate_insight(prompt)
+            ai_summary = resp.get("insight") if resp else None
+        except Exception:
+            pass
+
+    return {"digest": digest, "ai_summary": ai_summary, "model_available": model_available}
+
+# ── Portfolio Rebalancing (Wealthfront-inspired) ────────
+
+@app.post("/api/rebalance")
+async def rebalance_suggestions(req: PortfolioRequest):
+    """Suggest rebalancing trades to optimize portfolio allocation."""
+    holdings = [h.model_dump() for h in req.holdings]
+    for h in holdings:
+        h["symbol"] = yf_client.normalize_symbol(h["symbol"])
+    symbols = [h["symbol"] for h in holdings]
+
+    async def _fetch(sym):
+        try:
+            return sym, await yf_client.get_daily(sym)
+        except Exception:
+            return sym, []
+
+    results = await asyncio.gather(*[_fetch(s) for s in symbols])
+    daily_data = {sym: data for sym, data in results}
+
+    positions = []
+    total_value = 0
+    for h in holdings:
+        data = daily_data.get(h["symbol"], [])
+        price = float(data[0]["close"]) if data else h["avg_cost"]
+        value = h["shares"] * price
+        total_value += value
+        positions.append({"symbol": h["symbol"], "shares": h["shares"], "price": round(price, 2), "value": round(value, 2)})
+
+    if total_value <= 0:
+        return {"suggestions": [], "error": "Portfolio value is zero"}
+
+    for p in positions:
+        p["weight"] = round(p["value"] / total_value * 100, 2)
+
+    equal_weight = round(100 / len(positions), 2)
+    suggestions = []
+    for p in positions:
+        drift = p["weight"] - equal_weight
+        if abs(drift) > 5:
+            action = "REDUCE" if drift > 0 else "ADD"
+            trade_value = abs(drift) / 100 * total_value
+            trade_shares = round(trade_value / p["price"], 2) if p["price"] > 0 else 0
+            suggestions.append({
+                "symbol": p["symbol"], "action": action,
+                "reason": f"{'Over' if drift > 0 else 'Under'}weight by {abs(drift):.1f}pp ({p['weight']:.1f}% vs {equal_weight:.1f}% target)",
+                "current_weight": p["weight"], "target_weight": equal_weight,
+                "drift": round(drift, 2), "suggested_shares": trade_shares,
+                "suggested_value": round(trade_value, 2),
+            })
+
+    suggestions.sort(key=lambda x: abs(x["drift"]), reverse=True)
+    hhi = sum((p["weight"]/100)**2 for p in positions)
+    effective_n = round(1/hhi, 2) if hhi > 0 else len(positions)
+
+    return {
+        "positions": positions, "suggestions": suggestions,
+        "total_value": round(total_value, 2), "hhi": round(hhi, 4),
+        "effective_n": effective_n, "target": "equal_weight",
+    }
 
 
 # ── Serve Frontend ──────────��────────────────────────���──────
@@ -1037,4 +2007,4 @@ if __name__ == "__main__":
     print("\n  Starting Veris — Portfolio Intelligence...")
     print("   Frontend: http://localhost:8000")
     print("   API docs: http://localhost:8000/docs\n")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, workers=1, limit_concurrency=50, timeout_keep_alive=30)

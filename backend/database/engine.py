@@ -101,6 +101,9 @@ def get_db():
     db = _SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

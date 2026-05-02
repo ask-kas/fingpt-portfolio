@@ -9,3 +9,4 @@ scipy>=1.11.0
 PyPortfolioOpt>=1.5.5
 SQLAlchemy>=2.0.0
 PyMySQL>=1.1.0
+bcrypt>=4.0.0

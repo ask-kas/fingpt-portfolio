@@ -1,14 +1,17 @@
 """
-data_fetcher.py — Clients for Yahoo Finance (yfinance), FRED, and SEC EDGAR APIs.
+data_fetcher.py — Clients for Yahoo Finance (yfinance), FRED, SEC EDGAR,
+and Polymarket APIs.
 
 yfinance: Free, no API key, no rate limits for reasonable usage.
 FRED: Free API key required.
 SEC EDGAR: No key, just a User-Agent string.
+Polymarket: Free public Gamma API, no key required.
 """
 
 import asyncio
 import hashlib
 import httpx
+import json
 import logging
 import math
 import os
@@ -132,6 +135,122 @@ class YFinanceClient:
 
         return rows
 
+    # ── Intraday / minute bars ───────────────────────────────
+    #
+    # yfinance intraday interval limits (Yahoo enforces these):
+    #   1m   → max 7 days of history, 7d per request
+    #   2m   → max 60 days, 60d per request
+    #   5m   → max 60 days, 60d per request
+    #   15m  → max 60 days, 60d per request
+    #   30m  → max 60 days, 60d per request
+    #   60m  → max 730 days, 60d per request
+    #   90m  → max 60 days
+    #   1h   → max 730 days, 60d per request
+    #
+    # We pick a sensible default period per interval so callers can just
+    # say "give me 1-minute bars" without hitting Yahoo's constraints.
+    _INTRADAY_VALID_INTERVALS = {
+        "1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"
+    }
+    _INTRADAY_DEFAULT_PERIOD = {
+        "1m": "1d",
+        "2m": "5d",
+        "5m": "5d",
+        "15m": "5d",
+        "30m": "1mo",
+        "60m": "3mo",
+        "90m": "60d",
+        "1h": "3mo",
+    }
+    _INTRADAY_MAX_PERIOD = {
+        "1m": "7d",
+        "2m": "60d",
+        "5m": "60d",
+        "15m": "60d",
+        "30m": "60d",
+        "60m": "2y",
+        "90m": "60d",
+        "1h": "2y",
+    }
+
+    def _get_intraday_sync(
+        self,
+        symbol: str,
+        interval: str = "1m",
+        period: str | None = None,
+        prepost: bool = False,
+    ) -> list[dict]:
+        """Fetch intraday OHLCV bars from yfinance.
+
+        Returns a list of rows, newest first. Each row carries a UTC
+        ISO-8601 timestamp plus OHLCV. Freshness metadata (fetched_at,
+        age_seconds, is_stale) is attached to the first row.
+
+        The staleness threshold scales with interval: a 1-minute bar is
+        stale after ~5 min for stocks; crypto trades 24/7 so we tolerate
+        slightly longer gaps. Outside of market hours stocks will always
+        be "stale" relative to wall-clock, which is the correct signal.
+        """
+        interval = (interval or "1m").lower()
+        if interval not in self._INTRADAY_VALID_INTERVALS:
+            raise ValueError(
+                f"Invalid interval '{interval}'. Valid: "
+                f"{sorted(self._INTRADAY_VALID_INTERVALS)}"
+            )
+
+        if period is None:
+            period = self._INTRADAY_DEFAULT_PERIOD[interval]
+
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period=period, interval=interval, prepost=prepost)
+
+        if hist.empty:
+            return []
+
+        rows = []
+        for ts, row in hist.iterrows():
+            # yfinance returns tz-aware timestamps; normalise to UTC.
+            try:
+                if ts.tzinfo is None:
+                    ts_utc = ts.tz_localize("UTC")
+                else:
+                    ts_utc = ts.tz_convert("UTC")
+            except Exception:
+                ts_utc = ts
+            rows.append({
+                "timestamp": ts_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "open": round(float(row["Open"]), 4),
+                "high": round(float(row["High"]), 4),
+                "low": round(float(row["Low"]), 4),
+                "close": round(float(row["Close"]), 4),
+                "volume": int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
+            })
+
+        rows.reverse()  # newest first
+
+        # Freshness metadata on the newest bar.
+        if rows:
+            fetched_at = datetime.now(timezone.utc)
+            try:
+                latest = datetime.strptime(rows[0]["timestamp"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                age_seconds = int((fetched_at - latest).total_seconds())
+            except Exception:
+                age_seconds = 0
+            rows[0]["fetched_at"] = fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            rows[0]["age_seconds"] = age_seconds
+            # Stale threshold: 3× the interval length for stocks,
+            # 2× for crypto (trades continuously). Baseline interval in sec:
+            interval_seconds = {
+                "1m": 60, "2m": 120, "5m": 300, "15m": 900, "30m": 1800,
+                "60m": 3600, "90m": 5400, "1h": 3600,
+            }.get(interval, 60)
+            is_crypto = "-USD" in symbol.upper()
+            threshold = interval_seconds * (2 if is_crypto else 3)
+            rows[0]["is_stale"] = bool(age_seconds > threshold)
+            rows[0]["interval"] = interval
+
+        return rows
+
     def _get_news_sync(self, symbols: list[str], limit: int = 10) -> list[dict]:
         """Fetch news for a set of tickers and deduplicate by URL fingerprint.
 
@@ -228,7 +347,7 @@ class YFinanceClient:
         try:
             result = await _run_sync(self._get_quote_sync, symbol)
             if "error" not in result:
-                cache.set(cache_key, result, ttl_seconds=300)  # 5 min
+                cache.set(cache_key, result, ttl_seconds=900)  # 15 min
             return result
         except Exception as e:
             logger.error("Failed to fetch quote for %s: %s", symbol, e)
@@ -248,6 +367,39 @@ class YFinanceClient:
             return result
         except Exception as e:
             logger.error("Failed to fetch daily data for %s: %s", symbol, e)
+            return []
+
+    async def get_intraday(
+        self,
+        symbol: str,
+        interval: str = "1m",
+        period: str | None = None,
+        prepost: bool = False,
+    ) -> list[dict]:
+        """Get intraday OHLCV bars at the requested interval.
+
+        TTL scales with the bar interval — no point caching a 1-minute
+        bar for an hour. 1m → 30s, 5m → 2min, anything larger → 5min.
+        """
+        interval = (interval or "1m").lower()
+        period_key = period or "default"
+        cache_key = f"intraday:{symbol}:{interval}:{period_key}:{int(bool(prepost))}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            result = await _run_sync(
+                self._get_intraday_sync, symbol, interval, period, prepost
+            )
+            if result:
+                ttl = 30 if interval == "1m" else 120 if interval in ("2m", "5m") else 300
+                cache.set(cache_key, result, ttl_seconds=ttl)
+            return result
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error("Failed to fetch intraday data for %s (%s): %s", symbol, interval, e)
             return []
 
     async def get_news(self, symbols: list[str], limit: int = 10) -> list[dict]:
@@ -789,6 +941,388 @@ class SECEdgarClient:
             return results
 
 
+class PolymarketClient:
+    """Client for the Polymarket Gamma API (public, no auth)."""
+
+    BASE = "https://gamma-api.polymarket.com"
+
+    MEME_KEYWORDS = frozenset(['gta vi', 'gta 6', 'jesus', 'alien', 'ufo', 'bigfoot', 'zombie',
+        'flat earth', 'simulation', 'time travel', 'vampire', 'unicorn', 'hogwarts',
+        'before gta', 'rihanna album', 'playboi carti', 'elder scrolls'])
+
+    SPORTS_KEYWORDS = frozenset(['nba', 'nfl', 'nhl', 'mlb', 'ufc', 'fifa', 'world cup',
+        'stanley cup', 'super bowl', 'finals', 'championship', 'win the 2026',
+        'win the 2025', 'grand prix', 'formula 1', 'f1', 'olympics', 'premier league',
+        'champions league', 'touchdown', 'quarterback', 'mvp award', 'batting',
+        'home run', 'slam dunk', 'penalty kick', 'oilers', 'penguins', 'raptors',
+        'hawks', 'rockets', 'magic', '76ers', 'timberwolves', 'pistons', 'celtics',
+        'lakers', 'warriors', 'cavaliers', 'knicks', 'nets', 'heat', 'bucks',
+        'nuggets', 'suns', 'mavericks', 'clippers', 'pacers', 'grizzlies',
+        'thunder', 'spurs', 'kings', 'blazers', 'jazz', 'pelicans', 'hornets',
+        'wizards', 'bulls', 'pistons', 'uruguay', 'netherlands', 'brazil',
+        'argentina', 'france', 'germany', 'england', 'spain', 'portugal'])
+
+    FINANCE_KEYWORDS = frozenset(['fed', 'rate cut', 'rate hike', 'inflation', 'cpi', 'gdp',
+        'recession', 'treasury', 'unemployment', 'stock', 's&p', 'nasdaq', 'dow', 'earnings',
+        'ipo', 'tariff', 'trade war', 'debt ceiling', 'default', 'bitcoin', 'btc', 'ethereum',
+        'eth', 'crypto', 'sec', 'fomc', 'opec', 'oil', 'gold', 'dollar', 'euro', 'yield',
+        'bond', 'market cap', 'valuation', 'revenue', 'profit', 'bank', 'merger', 'acquisition'])
+
+    def _relevance_score(self, question: str, end_date: str, volume: float, volume_24hr: float, yes_price: float) -> float:
+        q = question.lower()
+        if any(kw in q for kw in self.MEME_KEYWORDS):
+            return -1.0
+        score = 0.0
+        if any(kw in q for kw in self.SPORTS_KEYWORDS):
+            score -= 30
+        finance_hits = sum(1 for kw in self.FINANCE_KEYWORDS if kw in q)
+        score += min(finance_hits * 20, 60)
+        if end_date:
+            try:
+                from datetime import datetime
+                end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                days_left = (end - datetime.now(end.tzinfo)).days
+                if 0 < days_left <= 30: score += 30
+                elif days_left <= 90: score += 20
+                elif days_left <= 180: score += 10
+                elif days_left > 365 * 5: score -= 20
+            except Exception:
+                pass
+        if volume_24hr > 100000: score += 15
+        elif volume_24hr > 10000: score += 10
+        elif volume_24hr > 1000: score += 5
+        price_conviction = abs(yes_price - 0.5) * 20
+        score += price_conviction
+        return score
+
+    async def get_trending_markets(self, limit: int = 100) -> dict:
+        cached = cache.get("polymarket_trending")
+        if cached is not None:
+            return cached
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(f"{self.BASE}/markets", params={
+                    "order": "volume_24hr",
+                    "ascending": "false",
+                    "limit": min(limit * 5, 500),
+                    "closed": "false",
+                    "active": "true",
+                })
+                r.raise_for_status()
+                raw = r.json()
+
+            markets = []
+            for m in raw:
+                try:
+                    prices = json.loads(m.get("outcomePrices", "[]"))
+                    prices = [float(p) for p in prices]
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    prices = []
+
+                try:
+                    outcomes = json.loads(m.get("outcomes", "[]")) if isinstance(m.get("outcomes"), str) else m.get("outcomes", [])
+                except (json.JSONDecodeError, ValueError):
+                    outcomes = ["Yes", "No"]
+
+                try:
+                    clob_ids = json.loads(m.get("clobTokenIds", "[]")) if m.get("clobTokenIds") else []
+                except (json.JSONDecodeError, ValueError):
+                    clob_ids = []
+
+                question = m.get("question", "")
+                vol = float(m.get("volumeNum", 0) or 0)
+                vol24 = float(m.get("volume24hr", 0) or 0)
+                end = m.get("endDate", "")
+                yes_price = prices[0] if prices else 0.5
+                rel = self._relevance_score(question, end, vol, vol24, yes_price)
+
+                markets.append({
+                    "question": question,
+                    "slug": m.get("slug", ""),
+                    "image": m.get("image", ""),
+                    "outcome_prices": prices,
+                    "outcomes": outcomes,
+                    "clob_token_ids": clob_ids,
+                    "volume": vol,
+                    "volume_24hr": vol24,
+                    "liquidity": float(m.get("liquidityNum", 0) or 0),
+                    "end_date": end,
+                    "relevance": round(rel, 1),
+                })
+
+            markets = [m for m in markets if m["relevance"] >= 0]
+            markets.sort(key=lambda x: x["relevance"], reverse=True)
+            markets = markets[:limit]
+            result = {"markets": markets}
+            cache.set("polymarket_trending", result, ttl_seconds=300)
+            return result
+
+        except Exception as e:
+            logger.error("Failed to fetch Polymarket markets: %s", e)
+            return {"error": str(e)}
+
+
+    async def get_resolved_markets(self, max_pages: int = 5) -> list:
+        cached = cache.get("polymarket_resolved")
+        if cached is not None:
+            return cached
+
+        resolved = []
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                for page in range(max_pages):
+                    r = await client.get(f"{self.BASE}/markets", params={
+                        "limit": 100, "offset": page * 100,
+                        "closed": "true", "order": "volume", "ascending": "false",
+                    })
+                    r.raise_for_status()
+                    batch = r.json()
+                    if not batch:
+                        break
+                    for m in batch:
+                        try:
+                            prices = json.loads(m.get("outcomePrices", "[]"))
+                            prices = [float(p) for p in prices]
+                        except (json.JSONDecodeError, ValueError, TypeError):
+                            continue
+                        if len(prices) < 2:
+                            continue
+                        last_price = float(m.get("lastTradePrice", 0) or 0)
+                        if last_price <= 0:
+                            last_price = prices[0]
+                        resolved_yes = prices[0] > 0.5
+                        resolved.append({
+                            "question": m.get("question", ""),
+                            "last_trade_price": last_price,
+                            "resolved_yes": resolved_yes,
+                            "volume": float(m.get("volumeNum", 0) or 0),
+                            "category": m.get("category", ""),
+                        })
+        except Exception as e:
+            logger.error("Failed to fetch resolved markets: %s", e)
+
+        cache.set("polymarket_resolved", resolved, ttl_seconds=3600)
+        return resolved
+
+    async def get_all_markets(self, max_pages: int = 5) -> list:
+        cached = cache.get("polymarket_all")
+        if cached is not None:
+            return cached
+
+        all_markets = []
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                for page in range(max_pages):
+                    r = await client.get(f"{self.BASE}/markets", params={
+                        "limit": 100, "offset": page * 100,
+                        "closed": "false", "active": "true",
+                    })
+                    r.raise_for_status()
+                    batch = r.json()
+                    if not batch:
+                        break
+                    for m in batch:
+                        try:
+                            prices = json.loads(m.get("outcomePrices", "[]"))
+                            prices = [float(p) for p in prices]
+                        except (json.JSONDecodeError, ValueError, TypeError):
+                            prices = []
+                        if not prices:
+                            continue
+                        all_markets.append({
+                            "question": m.get("question", ""),
+                            "slug": m.get("slug", ""),
+                            "outcome_prices": prices,
+                            "volume": float(m.get("volumeNum", 0) or 0),
+                        })
+        except Exception as e:
+            logger.error("Failed to bulk fetch Polymarket: %s", e)
+
+        cache.set("polymarket_all", all_markets, ttl_seconds=600)
+        return all_markets
+
+    async def get_price_history(self, clob_token_id: str, interval: str = "1w") -> dict:
+        cache_key = f"pm_hist:{clob_token_id}:{interval}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get("https://clob.polymarket.com/prices-history", params={
+                    "market": clob_token_id,
+                    "interval": interval,
+                })
+                r.raise_for_status()
+                raw = r.json()
+
+            history = [
+                {"timestamp": int(pt.get("t", 0)), "price": float(pt.get("p", 0))}
+                for pt in raw.get("history", [])
+            ]
+            result = {"history": history}
+            cache.set(cache_key, result, ttl_seconds=1800)
+            return result
+
+        except Exception as e:
+            logger.error("Failed to fetch Polymarket history: %s", e)
+            return {"error": str(e)}
+
+
+class KalshiClient:
+    """Client for the Kalshi public API (no auth required for market data)."""
+
+    BASE = "https://api.elections.kalshi.com/trade-api/v2"
+
+    async def get_trending_events(self, limit: int = 100) -> dict:
+        cached = cache.get("kalshi_trending")
+        if cached is not None:
+            return cached
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(f"{self.BASE}/events", params={
+                    "limit": limit,
+                    "status": "open",
+                    "with_nested_markets": "true",
+                })
+                r.raise_for_status()
+                raw = r.json()
+
+            events = []
+            for e in raw.get("events", []):
+                mkts = e.get("markets", [])
+                total_vol = sum(float(m.get("volume_fp", 0) or 0) for m in mkts)
+                vol_24h = sum(float(m.get("volume_24h_fp", 0) or 0) for m in mkts)
+
+                top_market = mkts[0] if mkts else {}
+                yes_price = float(top_market.get("yes_bid_dollars", 0) or 0)
+                no_price = 1.0 - yes_price if yes_price > 0 else 0
+
+                outcomes = []
+                for m in mkts[:6]:
+                    yes = float(m.get("yes_bid_dollars", 0) or 0)
+                    outcomes.append({
+                        "title": m.get("title", ""),
+                        "yes_price": yes,
+                        "ticker": m.get("ticker", ""),
+                    })
+
+                events.append({
+                    "title": e.get("title", ""),
+                    "category": e.get("category", ""),
+                    "sub_title": e.get("sub_title", ""),
+                    "event_ticker": e.get("event_ticker", ""),
+                    "series_ticker": e.get("series_ticker", ""),
+                    "mutually_exclusive": e.get("mutually_exclusive", False),
+                    "yes_price": yes_price,
+                    "no_price": no_price,
+                    "volume": total_vol,
+                    "volume_24hr": vol_24h,
+                    "close_time": top_market.get("close_time", ""),
+                    "num_markets": len(mkts),
+                    "outcomes": outcomes,
+                })
+
+            events.sort(key=lambda x: x["volume"], reverse=True)
+            result = {"events": events}
+            cache.set("kalshi_trending", result, ttl_seconds=300)
+            return result
+
+        except Exception as e:
+            logger.error("Failed to fetch Kalshi events: %s", e)
+            return {"error": str(e)}
+
+    async def get_all_events(self, max_pages: int = 2) -> list:
+        cached = cache.get("kalshi_all")
+        if cached is not None:
+            return cached
+
+        all_events = []
+        try:
+            cursor = ""
+            async with httpx.AsyncClient(timeout=30) as client:
+                for _ in range(max_pages):
+                    params = {"limit": 200, "status": "open", "with_nested_markets": "true"}
+                    if cursor:
+                        params["cursor"] = cursor
+                    r = await client.get(f"{self.BASE}/events", params=params)
+                    r.raise_for_status()
+                    raw = r.json()
+                    events = raw.get("events", [])
+                    if not events:
+                        break
+                    for e in events:
+                        mkts = e.get("markets", [])
+                        top = mkts[0] if mkts else {}
+                        yes = float(top.get("yes_bid_dollars", 0) or 0)
+                        if yes <= 0:
+                            continue
+                        outcomes = []
+                        for m in mkts:
+                            yp = float(m.get("yes_bid_dollars", 0) or 0)
+                            if yp > 0:
+                                outcomes.append({"title": m.get("title", ""), "yes_price": yp, "ticker": m.get("ticker", "")})
+                        all_events.append({
+                            "title": e.get("title", ""),
+                            "event_ticker": e.get("event_ticker", ""),
+                            "category": e.get("category", ""),
+                            "mutually_exclusive": e.get("mutually_exclusive", False),
+                            "yes_price": yes,
+                            "outcomes": outcomes,
+                            "volume": sum(float(m.get("volume_fp", 0) or 0) for m in mkts),
+                        })
+                    cursor = raw.get("cursor", "")
+                    if not cursor:
+                        break
+        except Exception as e:
+            logger.error("Failed to bulk fetch Kalshi: %s", e)
+
+        cache.set("kalshi_all", all_events, ttl_seconds=600)
+        return all_events
+
+    async def get_candlesticks(self, ticker: str, days: int = 30, series_ticker: str = "") -> dict:
+        cache_key = f"kalshi_candles:{ticker}:{days}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            import time as _time
+            end_ts = int(_time.time())
+            start_ts = end_ts - days * 86400
+
+            if not series_ticker:
+                parts = ticker.split("-")
+                series_ticker = parts[0] if parts else ticker
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(f"{self.BASE}/series/{series_ticker}/markets/{ticker}/candlesticks", params={
+                    "start_ts": start_ts,
+                    "end_ts": end_ts,
+                    "period_interval": 1440,
+                })
+                r.raise_for_status()
+                raw = r.json()
+
+            history = []
+            for c in raw.get("candlesticks", []):
+                price = c.get("price", {})
+                mean = price.get("mean_dollars") or price.get("close_dollars") or 0
+                history.append({
+                    "timestamp": int(c.get("end_period_ts", 0)),
+                    "price": float(mean),
+                })
+            result = {"history": history}
+            cache.set(cache_key, result, ttl_seconds=1800)
+            return result
+
+        except Exception as e:
+            logger.error("Failed to fetch Kalshi candlesticks: %s", e)
+            return {"error": str(e)}
+
+
 def create_clients() -> dict:
     """Factory: create all API clients from environment variables."""
     from dotenv import load_dotenv
@@ -798,4 +1332,6 @@ def create_clients() -> dict:
         "yfinance": YFinanceClient(),
         "fred": FREDClient(os.getenv("FRED_API_KEY", "")),
         "sec": SECEdgarClient(os.getenv("SEC_USER_AGENT", "Anonymous anon@example.com")),
+        "polymarket": PolymarketClient(),
+        "kalshi": KalshiClient(),
     }
