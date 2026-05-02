@@ -354,6 +354,15 @@ function getUnlockStageForNav(label) {
   return null;
 }
 
+// Returns the next stage the user has not yet completed (the only one whose
+// locked tools should be visible as a "coming next" preview).
+function getNextStage(learner) {
+  for (const s of STAGES) {
+    if (!learner.completedStages.includes(s.id)) return s;
+  }
+  return null;
+}
+
 function isPanelUnlocked(panelId) {
   const learner = getLearner();
   if (!learner.learningMode) return true;
@@ -783,14 +792,21 @@ function applyToolGating() {
     'qualityPanel', 'tradingToolsPanel', 'marketIntelPanel', 'polymarketPanel', 'myBetsPanel',
   ];
 
+  const nextStage = getNextStage(learner);
+  const previewablePanels = new Set(nextStage ? nextStage.unlocks.panels : []);
+
   ALL_GATED_PANELS.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     if (unlockedPanels.has(id)) {
       el.classList.remove('learn-locked-section');
       el.style.removeProperty('display');
-    } else {
+    } else if (previewablePanels.has(id)) {
       el.classList.add('learn-locked-section');
+      el.style.removeProperty('display');
+    } else {
+      el.classList.remove('learn-locked-section');
+      el.style.display = 'none';
     }
   });
 }
@@ -803,15 +819,24 @@ function buildNavBarWithLocks(originalBuildNavBar) {
   const container = document.getElementById('navLinks');
   if (!container) return;
 
-  container.innerHTML = NAV_SECTIONS.map(s => {
+  const nextStage = getNextStage(learner);
+  const previewableNav = new Set(nextStage ? nextStage.unlocks.navItems : []);
+
+  // Restrict to the active tab's panels (when tab grouping is active).
+  const activeTabPanels = (typeof getActiveTab === 'function')
+    ? new Set(getActiveTab().panels) : null;
+
+  container.innerHTML = NAV_SECTIONS.filter(s =>
+    !activeTabPanels || activeTabPanels.has(s.id)
+  ).map(s => {
     const unlocked = unlockedNavItems === null || unlockedNavItems.has(s.label);
     if (unlocked) {
       return `<a class="nav-link" data-target="${s.id}" onclick="scrollToSection('${s.id}')">${s.label}</a>`;
-    } else {
-      const stage = getUnlockStageForNav(s.label);
-      const tip = stage ? `Complete "${stage.name}" to unlock` : 'Locked';
-      return `<a class="nav-link nav-locked" title="${tip}" onclick="showLockedToast(${stage ? stage.id : 0})"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> ${s.label}</a>`;
     }
+    if (!previewableNav.has(s.label)) return '';
+    const stage = getUnlockStageForNav(s.label);
+    const tip = stage ? `Complete "${stage.name}" to unlock` : 'Locked';
+    return `<a class="nav-link nav-locked" title="${tip}" onclick="showLockedToast(${stage ? stage.id : 0})"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> ${s.label}</a>`;
   }).join('');
 }
 

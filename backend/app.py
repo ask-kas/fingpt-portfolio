@@ -1991,6 +1991,109 @@ async def rebalance_suggestions(req: PortfolioRequest):
 
 # ── Serve Frontend ──────────��────────────────────────���──────
 
+# ── AI Chat (Gemini Flash) ─────────────────────────────────
+
+class ChatMessage(BaseModel):
+    role: str  # "user" | "model"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[ChatMessage] = []
+    portfolio_context: Optional[dict] = None
+
+
+_GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
+_gemini_client = None
+if _GEMINI_KEY:
+    try:
+        from google import genai
+        _gemini_client = genai.Client(api_key=_GEMINI_KEY)
+        logger.info(
+            "Gemini chat enabled (key loaded: %s***%s, len=%d)",
+            _GEMINI_KEY[:4], _GEMINI_KEY[-3:], len(_GEMINI_KEY),
+        )
+    except Exception as _e:
+        logger.warning("Gemini client init failed: %s", _e)
+else:
+    logger.info("Gemini chat disabled — GEMINI_API_KEY not set in config/.env")
+
+
+def _summarize_portfolio_context(ctx: Optional[dict]) -> str:
+    if not ctx:
+        return "No portfolio loaded yet."
+    lines = []
+    a = ctx.get("analytics") or {}
+    if a:
+        lines.append(
+            f"Total value: {a.get('total_value')}, Sharpe: {a.get('sharpe')}, "
+            f"Vol: {a.get('volatility')}, Beta: {a.get('beta')}, "
+            f"Max DD: {a.get('max_drawdown')}"
+        )
+    holdings = (a.get("holdings") or [])[:20]
+    if holdings:
+        rows = []
+        for h in holdings:
+            rows.append(
+                f"  - {h.get('symbol')}: {h.get('shares')} sh @ "
+                f"${h.get('price')}, weight {h.get('weight')}%, "
+                f"vol {h.get('volatility')}, sharpe {h.get('sharpe')}"
+            )
+        lines.append("Holdings:\n" + "\n".join(rows))
+    mc = ctx.get("monte_carlo")
+    if mc:
+        lines.append(
+            f"VaR 95%: {mc.get('var_95')}, CVaR 95%: {mc.get('cvar_95')}"
+        )
+    return "\n".join(lines) if lines else "Portfolio snapshot unavailable."
+
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    if not _gemini_client:
+        raise HTTPException(
+            503,
+            "Chat unavailable. Set GEMINI_API_KEY in config/.env "
+            "(free key: https://aistudio.google.com/apikey)",
+        )
+
+    system_instruction = (
+        "You are Veris, a financial analyst built into a portfolio dashboard. "
+        "Answer concisely and cite specific numbers from the user's portfolio "
+        "when relevant. If a question requires data you don't have, say so "
+        "rather than guessing. Never give personalized buy/sell advice — "
+        "frame ideas as considerations or trade-offs. Default to plain text; "
+        "use short bullet lists only when comparing items.\n\n"
+        "User's portfolio snapshot:\n"
+        + _summarize_portfolio_context(req.portfolio_context)
+    )
+
+    contents = []
+    for m in req.history[-12:]:
+        role = "user" if m.role == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": m.content}]})
+    contents.append({"role": "user", "parts": [{"text": req.message}]})
+
+    try:
+        resp = _gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config={
+                "system_instruction": system_instruction,
+                "temperature": 0.4,
+                "max_output_tokens": 800,
+            },
+        )
+        reply = (resp.text or "").strip()
+        if not reply:
+            reply = "I couldn't generate a response. Try rephrasing your question."
+        return {"reply": reply}
+    except Exception as e:
+        logger.exception("Gemini chat failed")
+        raise HTTPException(502, f"Chat provider error: {e}")
+
+
 frontend_dir = Path(__file__).parent.parent / "frontend" / "static"
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
 
