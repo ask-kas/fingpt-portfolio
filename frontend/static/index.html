@@ -1119,15 +1119,6 @@
 
     <div class="dashboard" id="dashboardGrid">
 
-      <!-- AI Insight -->
-      <div class="panel full-width" id="sectionAI">
-        <h2><span class="section-badge"></span> Veris AI Insight <span class="info-btn" onclick="showInfo('ai')">i</span></h2>
-        <div id="aiInsight" class="ai-box">
-          <p style="color:var(--muted);margin-bottom:10px">Full portfolio analysis with risk, optimization, stress testing, and actionable suggestions. Takes 1-2 minutes on first run.</p>
-          <button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Ask Veris AI</button>
-        </div>
-      </div>
-
       <!-- Rebalancing Suggestions (Wealthfront-inspired) -->
       <div class="panel full-width" id="rebalancePanel" style="display:none">
         <h2><span class="section-badge"></span> Rebalance Suggestions</h2>
@@ -1554,7 +1545,7 @@ function closeInfo() { document.getElementById('infoOverlay').classList.remove('
 const TAB_GROUPS = [
   {
     id: 'overview', label: 'Overview',
-    panels: ['sectionSummary', 'sectionAI', 'sectionHoldings', 'sectionAllocation'],
+    panels: ['sectionSummary', 'sectionHoldings', 'sectionAllocation'],
   },
   {
     id: 'risk', label: 'Risk',
@@ -1638,7 +1629,6 @@ function applyTabVisibility() {
 // ── Navigation Bar ────────────────────────────────
 const NAV_SECTIONS = [
   { id: 'sectionSummary', label: 'Summary' },
-  { id: 'sectionAI', label: 'AI Insight' },
   { id: 'sectionHoldings', label: 'Holdings' },
   { id: 'candlePanel', label: 'Charts' },
   { id: 'monteCarloPanel', label: 'VaR' },
@@ -2082,14 +2072,15 @@ function renderResults(data) {
     freshText.textContent = `All prices verified live \u00B7 ${priceSnippets} \u00B7 Last calculated ${nowUtc} UTC`;
   }
 
-  // AI Insight — on-demand via button
+  // AI Insight panel was removed — skip if absent.
   const aiEl = document.getElementById('aiInsight');
-  if (ai_insight) {
+  if (aiEl) {
     aiEl.className = 'ai-box';
-    renderAiInsight(aiEl, ai_insight);
-  } else {
-    aiEl.className = 'ai-box';
-    aiEl.innerHTML = `<p style="color:var(--muted);margin-bottom:10px">Get AI-powered analysis of your portfolio risk, performance, and actionable recommendations.</p><button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Ask Veris AI</button>`;
+    if (ai_insight) {
+      renderAiInsight(aiEl, ai_insight);
+    } else {
+      aiEl.innerHTML = `<p style="color:var(--muted);margin-bottom:10px">Get AI-powered analysis of your portfolio risk, performance, and actionable recommendations.</p><button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Ask Veris AI</button>`;
+    }
   }
 
   // Holdings table — with total return, dividends, tax, rsi label
@@ -4273,6 +4264,23 @@ function renderAdminTable(tab) {
     document.getElementById('chatSendBtn').disabled = true;
     try {
       const ctx = (typeof lastAnalysisData !== 'undefined' && lastAnalysisData) ? lastAnalysisData : null;
+      // Compact learning context: current learner state + curriculum index
+      // (titles/desc only, no full lesson bodies — keeps tokens low)
+      let learningCtx = null;
+      try {
+        if (typeof getLearner === 'function' && typeof STAGES !== 'undefined') {
+          learningCtx = {
+            learner: getLearner(),
+            stages: STAGES.map(s => ({
+              id: s.id,
+              name: s.name,
+              desc: s.desc,
+              unlockPreview: s.unlockPreview || '',
+              lessons: (s.lessons || []).map(l => ({ title: l.title, type: l.type })),
+            })),
+          };
+        }
+      } catch {}
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4280,6 +4288,7 @@ function renderAdminTable(tab) {
           message: text,
           history: chatHistory.slice(-12, -1),
           portfolio_context: ctx,
+          learning_context: learningCtx,
         }),
       });
       const data = await res.json();

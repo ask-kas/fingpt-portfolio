@@ -2002,6 +2002,7 @@ class ChatRequest(BaseModel):
     message: str
     history: list[ChatMessage] = []
     portfolio_context: Optional[dict] = None
+    learning_context: Optional[dict] = None
 
 
 _GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
@@ -2049,6 +2050,65 @@ def _summarize_portfolio_context(ctx: Optional[dict]) -> str:
     return "\n".join(lines) if lines else "Portfolio snapshot unavailable."
 
 
+def _summarize_learning_context(ctx: Optional[dict]) -> str:
+    """Compact learning-mode snapshot: progress + curriculum index."""
+    if not ctx:
+        return "Learning mode: not active."
+    learner = ctx.get("learner") or {}
+    stages = ctx.get("stages") or []
+    completed = learner.get("completedStages") or []
+    xp = learner.get("xp", 0)
+    learning_on = learner.get("learningMode", False)
+    next_stage = next(
+        (s for s in stages if s.get("id") not in completed), None
+    )
+
+    lines = [
+        f"Learning mode: {'ON' if learning_on else 'OFF'}",
+        f"XP: {xp}",
+        f"Completed stages: {completed or 'none'}",
+        f"Next stage: {next_stage.get('id')} — {next_stage.get('name')}"
+        if next_stage else "All stages complete.",
+    ]
+    if next_stage and next_stage.get("unlockPreview"):
+        lines.append(f"Next unlocks: {next_stage['unlockPreview']}")
+
+    if stages:
+        lines.append("\nCurriculum:")
+        for s in stages:
+            status = "✓" if s.get("id") in completed else (
+                "▶ in progress" if next_stage and s.get("id") == next_stage.get("id")
+                else "🔒 locked"
+            )
+            lessons = s.get("lessons") or []
+            lesson_titles = [l.get("title", "") for l in lessons if l.get("title")]
+            lessons_str = (
+                "; ".join(lesson_titles[:6])
+                + (f" (+{len(lesson_titles) - 6} more)" if len(lesson_titles) > 6 else "")
+            )
+            lines.append(
+                f"  Stage {s.get('id')} {status} — {s.get('name')}: "
+                f"{s.get('desc', '')}"
+            )
+            if lessons_str:
+                lines.append(f"      Lessons: {lessons_str}")
+    return "\n".join(lines)
+
+
+# Build Gemini function declarations from the shared MCP tool registry, so
+# the in-app chat and the standalone MCP server expose the exact same tools.
+try:
+    from backend.mcp_tools import TOOLS as _MCP_TOOLS, call_tool as _mcp_call_tool
+    _GEMINI_FUNCTION_DECLS = [
+        {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}
+        for t in _MCP_TOOLS
+    ]
+    logger.info("Loaded %d MCP tools for chat function-calling", len(_MCP_TOOLS))
+except Exception as _e:
+    logger.warning("MCP tools failed to load: %s", _e)
+    _MCP_TOOLS, _mcp_call_tool, _GEMINI_FUNCTION_DECLS = [], None, []
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     if not _gemini_client:
@@ -2059,36 +2119,96 @@ async def chat(req: ChatRequest):
         )
 
     system_instruction = (
-        "You are Veris, a financial analyst built into a portfolio dashboard. "
-        "Answer concisely and cite specific numbers from the user's portfolio "
-        "when relevant. If a question requires data you don't have, say so "
-        "rather than guessing. Never give personalized buy/sell advice — "
-        "frame ideas as considerations or trade-offs. Default to plain text; "
-        "use short bullet lists only when comparing items.\n\n"
+        "You are Veris, a financial analyst and tutor built into a portfolio "
+        "dashboard. You have two jobs:\n"
+        "  1. Answer questions about the user's portfolio — cite specific "
+        "     numbers, and CALL tools (don't guess) when fresh data is needed. "
+        "     Tools are the authoritative source for volatility numbers.\n"
+        "  2. Act as a tutor for the dashboard's learning curriculum — explain "
+        "     concepts, summarize lessons, recommend the next stage, and quiz "
+        "     the user when asked. When a concept appears in the curriculum, "
+        "     explain it in the same spirit as the matching lesson title.\n\n"
+        "Always cite which lesson/stage you're drawing from when teaching. "
+        "After calling tools, summarize results in plain language. Never give "
+        "personalized buy/sell advice — frame ideas as trade-offs.\n\n"
         "User's portfolio snapshot:\n"
         + _summarize_portfolio_context(req.portfolio_context)
+        + "\n\n"
+        + _summarize_learning_context(req.learning_context)
     )
 
-    contents = []
+    contents: list[dict] = []
     for m in req.history[-12:]:
         role = "user" if m.role == "user" else "model"
         contents.append({"role": role, "parts": [{"text": m.content}]})
     contents.append({"role": "user", "parts": [{"text": req.message}]})
 
+    config: dict = {
+        "system_instruction": system_instruction,
+        "temperature": 0.4,
+        "max_output_tokens": 1200,
+    }
+    if _GEMINI_FUNCTION_DECLS:
+        config["tools"] = [{"function_declarations": _GEMINI_FUNCTION_DECLS}]
+
+    tool_calls_made: list[dict] = []
+    MAX_HOPS = 5  # cap multi-step tool use to avoid runaway loops
+
     try:
-        resp = _gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contents,
-            config={
-                "system_instruction": system_instruction,
-                "temperature": 0.4,
-                "max_output_tokens": 800,
-            },
-        )
-        reply = (resp.text or "").strip()
-        if not reply:
-            reply = "I couldn't generate a response. Try rephrasing your question."
-        return {"reply": reply}
+        for hop in range(MAX_HOPS):
+            resp = await asyncio.to_thread(
+                _gemini_client.models.generate_content,
+                model="gemini-2.5-flash",
+                contents=contents,
+                config=config,
+            )
+
+            # Look for function calls in the response
+            fn_calls = []
+            candidates = getattr(resp, "candidates", None) or []
+            if candidates:
+                parts = getattr(candidates[0].content, "parts", []) or []
+                for p in parts:
+                    fc = getattr(p, "function_call", None)
+                    if fc and getattr(fc, "name", None):
+                        fn_calls.append(fc)
+
+            if not fn_calls:
+                # No more tool calls — return the text reply
+                reply = (resp.text or "").strip()
+                if not reply:
+                    reply = "I couldn't generate a response. Try rephrasing."
+                return {
+                    "reply": reply,
+                    "tool_calls": tool_calls_made,
+                }
+
+            # Append the model's tool-calling turn to the conversation
+            contents.append({
+                "role": "model",
+                "parts": [{"function_call": {"name": fc.name, "args": dict(fc.args or {})}} for fc in fn_calls],
+            })
+
+            # Execute each tool call
+            response_parts = []
+            for fc in fn_calls:
+                args = dict(fc.args or {})
+                logger.info("MCP tool call: %s(%s)", fc.name, args)
+                result = await asyncio.to_thread(_mcp_call_tool, fc.name, args)
+                tool_calls_made.append({"name": fc.name, "args": args, "result": result})
+                response_parts.append({
+                    "function_response": {
+                        "name": fc.name,
+                        "response": {"result": result},
+                    }
+                })
+            contents.append({"role": "user", "parts": response_parts})
+
+        # Hit hop limit without a final reply
+        return {
+            "reply": "I called several tools but couldn't summarize them. Try a more focused question.",
+            "tool_calls": tool_calls_made,
+        }
     except Exception as e:
         logger.exception("Gemini chat failed")
         raise HTTPException(502, f"Chat provider error: {e}")

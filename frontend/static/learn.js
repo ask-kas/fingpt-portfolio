@@ -47,8 +47,8 @@ const STAGES = [
       { q: 'Your portfolio went from $10,000 to $15,000, then dropped to $9,000, then recovered to $12,000. What is the max drawdown?', options: ['-10%', '-40%', '-25%', '-60%'], correct: 1, explanation: 'Max drawdown = worst peak-to-trough drop. Peak was $15,000, trough was $9,000. Drop = ($15,000 - $9,000) / $15,000 = -40%. The recovery to $12,000 doesn\'t matter — the drawdown already happened.' },
     ],
     unlocks: {
-      panels: ['sectionHoldings', 'intradayPanel', 'sectionAllocation', 'sectionMacro', 'sectionAI', 'rebalancePanel', 'newsDigestPanel'],
-      navItems: ['Holdings', 'Allocation', 'Macro', 'AI Insight', 'Rebalance'],
+      panels: ['sectionHoldings', 'intradayPanel', 'sectionAllocation', 'sectionMacro', 'rebalancePanel', 'newsDigestPanel'],
+      navItems: ['Holdings', 'Allocation', 'Macro', 'Rebalance'],
       holdingsCols: ['vol', 'sharpe', 'sortino', 'beta', 'alpha', 'maxDD', 'sma20', 'sma50', 'rsi14', 'tax'],
       sections: [],
     },
@@ -785,7 +785,7 @@ function applyToolGating() {
   if (!unlockedPanels) return;
 
   const ALL_GATED_PANELS = [
-    'sectionSummary', 'sectionAI', 'sectionHoldings', 'candlePanel', 'intradayPanel',
+    'sectionSummary', 'sectionHoldings', 'candlePanel', 'intradayPanel',
     'monteCarloPanel', 'frontierPanel', 'corrPanel', 'stressPanel', 'factorPanel',
     'tariffPanel', 'taxPanel', 'optionsPanel', 'sectionAllocation', 'sectionMacro',
     'sectionNews', 'holdersPanel', 'whatifPanel', 'regimePanel', 'eventsPanel',
