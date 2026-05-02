@@ -47,8 +47,8 @@ const STAGES = [
       { q: 'Your portfolio went from $10,000 to $15,000, then dropped to $9,000, then recovered to $12,000. What is the max drawdown?', options: ['-10%', '-40%', '-25%', '-60%'], correct: 1, explanation: 'Max drawdown = worst peak-to-trough drop. Peak was $15,000, trough was $9,000. Drop = ($15,000 - $9,000) / $15,000 = -40%. The recovery to $12,000 doesn\'t matter — the drawdown already happened.' },
     ],
     unlocks: {
-      panels: ['sectionHoldings', 'intradayPanel', 'sectionAllocation', 'sectionMacro', 'sectionAI', 'rebalancePanel', 'newsDigestPanel'],
-      navItems: ['Holdings', 'Allocation', 'Macro', 'AI Insight', 'Rebalance'],
+      panels: ['sectionHoldings', 'intradayPanel', 'sectionAllocation', 'sectionMacro', 'rebalancePanel', 'newsDigestPanel'],
+      navItems: ['Holdings', 'Allocation', 'Macro', 'Rebalance'],
       holdingsCols: ['vol', 'sharpe', 'sortino', 'beta', 'alpha', 'maxDD', 'sma20', 'sma50', 'rsi14', 'tax'],
       sections: [],
     },
@@ -350,6 +350,15 @@ function getAllUnlockedNavItems(learner) {
 function getUnlockStageForNav(label) {
   for (const s of STAGES) {
     if (s.unlocks.navItems.includes(label)) return s;
+  }
+  return null;
+}
+
+// Returns the next stage the user has not yet completed (the only one whose
+// locked tools should be visible as a "coming next" preview).
+function getNextStage(learner) {
+  for (const s of STAGES) {
+    if (!learner.completedStages.includes(s.id)) return s;
   }
   return null;
 }
@@ -776,12 +785,15 @@ function applyToolGating() {
   if (!unlockedPanels) return;
 
   const ALL_GATED_PANELS = [
-    'sectionSummary', 'sectionAI', 'sectionHoldings', 'candlePanel', 'intradayPanel',
+    'sectionSummary', 'sectionHoldings', 'candlePanel', 'intradayPanel',
     'monteCarloPanel', 'frontierPanel', 'corrPanel', 'stressPanel', 'factorPanel',
     'tariffPanel', 'taxPanel', 'optionsPanel', 'sectionAllocation', 'sectionMacro',
     'sectionNews', 'holdersPanel', 'whatifPanel', 'regimePanel', 'eventsPanel',
     'qualityPanel', 'tradingToolsPanel', 'marketIntelPanel', 'polymarketPanel', 'myBetsPanel',
   ];
+
+  const nextStage = getNextStage(learner);
+  const previewablePanels = new Set(nextStage ? nextStage.unlocks.panels : []);
 
   ALL_GATED_PANELS.forEach(id => {
     const el = document.getElementById(id);
@@ -789,8 +801,12 @@ function applyToolGating() {
     if (unlockedPanels.has(id)) {
       el.classList.remove('learn-locked-section');
       el.style.removeProperty('display');
-    } else {
+    } else if (previewablePanels.has(id)) {
       el.classList.add('learn-locked-section');
+      el.style.removeProperty('display');
+    } else {
+      el.classList.remove('learn-locked-section');
+      el.style.display = 'none';
     }
   });
 }
@@ -803,15 +819,24 @@ function buildNavBarWithLocks(originalBuildNavBar) {
   const container = document.getElementById('navLinks');
   if (!container) return;
 
-  container.innerHTML = NAV_SECTIONS.map(s => {
+  const nextStage = getNextStage(learner);
+  const previewableNav = new Set(nextStage ? nextStage.unlocks.navItems : []);
+
+  // Restrict to the active tab's panels (when tab grouping is active).
+  const activeTabPanels = (typeof getActiveTab === 'function')
+    ? new Set(getActiveTab().panels) : null;
+
+  container.innerHTML = NAV_SECTIONS.filter(s =>
+    !activeTabPanels || activeTabPanels.has(s.id)
+  ).map(s => {
     const unlocked = unlockedNavItems === null || unlockedNavItems.has(s.label);
     if (unlocked) {
       return `<a class="nav-link" data-target="${s.id}" onclick="scrollToSection('${s.id}')">${s.label}</a>`;
-    } else {
-      const stage = getUnlockStageForNav(s.label);
-      const tip = stage ? `Complete "${stage.name}" to unlock` : 'Locked';
-      return `<a class="nav-link nav-locked" title="${tip}" onclick="showLockedToast(${stage ? stage.id : 0})"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> ${s.label}</a>`;
     }
+    if (!previewableNav.has(s.label)) return '';
+    const stage = getUnlockStageForNav(s.label);
+    const tip = stage ? `Complete "${stage.name}" to unlock` : 'Locked';
+    return `<a class="nav-link nav-locked" title="${tip}" onclick="showLockedToast(${stage ? stage.id : 0})"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> ${s.label}</a>`;
   }).join('');
 }
 

@@ -402,6 +402,27 @@
   }
   .nav-link:hover { color: rgba(255,255,255,0.65); border-bottom-color: var(--accent); }
   .nav-link.active { color: #2DB87A; border-bottom-color: #2DB87A; }
+
+  /* ── Tab Bar ────────────────────────────────── */
+  .tab-bar {
+    position: sticky; top: 0; z-index: 101;
+    background: rgba(13,20,16,0.95); backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px; margin: 0 -24px;
+    display: flex; gap: 4px; overflow-x: auto; white-space: nowrap;
+  }
+  .tab-bar::-webkit-scrollbar { height: 0; }
+  .tab-btn {
+    padding: 14px 18px; font-size: 0.78rem; font-weight: 700;
+    color: rgba(255,255,255,0.45); background: transparent; border: none;
+    text-transform: uppercase; letter-spacing: 0.6px; cursor: pointer;
+    border-bottom: 2px solid transparent; transition: all 100ms ease-out;
+    flex-shrink: 0;
+  }
+  .tab-btn:hover { color: rgba(255,255,255,0.85); }
+  .tab-btn.active { color: #2DB87A; border-bottom-color: #2DB87A; }
+  /* Push the inner sticky nav-bar under the tab bar */
+  .tab-bar + .nav-bar { top: 48px; }
   /* nav fluid sizing handled in device-agnostic section */
 
   /* ── Legendary Investors ────────────────────── */
@@ -510,6 +531,9 @@
   .bet-add-form input, .bet-add-form select { width: 80px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.72rem; }
   .pm-card .pm-add-bet { font-size: 0.62rem; color: var(--accent); cursor: pointer; border: none; background: none; padding: 2px 0; opacity: 0.7; }
   .pm-card .pm-add-bet:hover { opacity: 1; }
+
+  /* Globally hidden panels (work-in-progress / disabled features) */
+  #rebalancePanel, #intradayPanel, #tradingToolsPanel { display: none !important; }
 
   /* Trading Tools */
   #tradingToolsPanel { background: linear-gradient(135deg, var(--surface) 0%, rgba(20,42,30,0.85) 100%); border: 1px solid rgba(45,184,122,0.15); }
@@ -1007,8 +1031,8 @@
     </div>
   </div>
 
-  <!-- Market Intelligence -->
-  <div class="panel full-width" id="marketIntelPanel">
+  <!-- Market Intelligence (relocated into Markets tab after analysis) -->
+  <div class="panel full-width" id="marketIntelPanel" style="display:none">
     <h2 onclick="toggleMiPanel()"><span class="section-badge"></span> Market Intelligence <span class="pm-collapse-arrow" id="miArrow">&#9660;</span></h2>
     <div class="pm-panel-body collapsed" id="miPanelBody">
       <div class="mi-tabs">
@@ -1040,8 +1064,8 @@
     </div>
   </div>
 
-  <!-- Prediction Markets -->
-  <div class="panel full-width" id="polymarketPanel">
+  <!-- Prediction Markets (relocated into Markets tab after analysis) -->
+  <div class="panel full-width" id="polymarketPanel" style="display:none">
     <h2 onclick="togglePmPanel()"><span class="section-badge"></span> Prediction Markets <span class="info-btn" onclick="event.stopPropagation();showInfo('polymarket')">i</span><span class="pm-collapse-arrow" id="pmArrow">&#9660;</span></h2>
     <div class="pm-panel-body collapsed" id="pmPanelBody">
     <div class="pm-source-row">
@@ -1073,7 +1097,10 @@
   <!-- Results -->
   <div id="results" style="display:none">
 
-    <!-- Navigation Bar -->
+    <!-- Tab Bar (top-level grouping) -->
+    <div class="tab-bar" id="tabBar"></div>
+
+    <!-- Navigation Bar (within active tab) -->
     <nav class="nav-bar" id="navBar">
       <div class="nav-links" id="navLinks"></div>
     </nav>
@@ -1090,16 +1117,7 @@
       </div>
     </div>
 
-    <div class="dashboard">
-
-      <!-- AI Insight -->
-      <div class="panel full-width" id="sectionAI">
-        <h2><span class="section-badge"></span> Veris AI Insight <span class="info-btn" onclick="showInfo('ai')">i</span></h2>
-        <div id="aiInsight" class="ai-box">
-          <p style="color:var(--muted);margin-bottom:10px">Full portfolio analysis with risk, optimization, stress testing, and actionable suggestions. Takes 1-2 minutes on first run.</p>
-          <button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Ask Veris AI</button>
-        </div>
-      </div>
+    <div class="dashboard" id="dashboardGrid">
 
       <!-- Rebalancing Suggestions (Wealthfront-inspired) -->
       <div class="panel full-width" id="rebalancePanel" style="display:none">
@@ -1522,11 +1540,95 @@ function showInfo(key) {
 }
 function closeInfo() { document.getElementById('infoOverlay').classList.remove('active'); }
 
+// ── Tab Groups ────────────────────────────────────
+// Groups panels into top-level tabs. Order matters — first tab is default.
+const TAB_GROUPS = [
+  {
+    id: 'overview', label: 'Overview',
+    panels: ['sectionSummary', 'sectionHoldings', 'sectionAllocation'],
+  },
+  {
+    id: 'risk', label: 'Risk',
+    panels: ['monteCarloPanel', 'stressPanel', 'regimePanel', 'eventsPanel', 'qualityPanel'],
+  },
+  {
+    id: 'optimize', label: 'Optimize',
+    panels: ['frontierPanel', 'corrPanel', 'whatifPanel', 'factorPanel'],
+  },
+  {
+    id: 'markets', label: 'Markets',
+    panels: ['sectionMacro', 'sectionNews', 'holdersPanel', 'marketIntelPanel', 'polymarketPanel'],
+  },
+  {
+    id: 'stocks', label: 'Per-Stock',
+    panels: ['candlePanel', 'optionsPanel', 'tariffPanel', 'taxPanel'],
+  },
+];
+
+let activeTabId = TAB_GROUPS[0].id;
+
+function getActiveTab() {
+  return TAB_GROUPS.find(t => t.id === activeTabId) || TAB_GROUPS[0];
+}
+
+function buildTabBar() {
+  const bar = document.getElementById('tabBar');
+  if (!bar) return;
+  bar.innerHTML = TAB_GROUPS.map(t =>
+    `<button class="tab-btn ${t.id === activeTabId ? 'active' : ''}" data-tab="${t.id}" onclick="switchTab('${t.id}')">${t.label}</button>`
+  ).join('');
+
+  // Move any orphan panels (declared outside the results block in the HTML)
+  // into the dashboard grid so they sit *below* the tab bar, not above it.
+  const grid = document.getElementById('dashboardGrid');
+  if (!grid) return;
+  const ALL_PANEL_IDS = TAB_GROUPS.flatMap(t => t.panels);
+  ALL_PANEL_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.parentElement !== grid) {
+      grid.appendChild(el);
+    }
+  });
+}
+
+function switchTab(tabId) {
+  if (!TAB_GROUPS.some(t => t.id === tabId)) return;
+  activeTabId = tabId;
+  buildTabBar();
+  applyTabVisibility();
+  buildNavBar();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// Hide panels not in the active tab. Respects learning-mode hiding (display:none
+// already set by applyToolGating) — we only re-show panels we own.
+function applyTabVisibility() {
+  const active = getActiveTab();
+  const activeSet = new Set(active.panels);
+  const ALL_TAB_PANELS = TAB_GROUPS.flatMap(t => t.panels);
+  ALL_TAB_PANELS.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!activeSet.has(id)) {
+      el.dataset.tabHidden = '1';
+      el.style.display = 'none';
+    } else {
+      delete el.dataset.tabHidden;
+      // Only un-hide if learning-mode gating hasn't hidden it
+      if (!el.classList.contains('learn-locked-section') &&
+          el.style.display === 'none') {
+        // Check if tool gating wants it hidden — leave alone if so
+        if (typeof isPanelUnlocked !== 'function' || isPanelUnlocked(id)) {
+          el.style.removeProperty('display');
+        }
+      }
+    }
+  });
+}
+
 // ── Navigation Bar ────────────────────────────────
 const NAV_SECTIONS = [
   { id: 'sectionSummary', label: 'Summary' },
-  { id: 'sectionAI', label: 'AI Insight' },
-  { id: 'rebalancePanel', label: 'Rebalance' },
   { id: 'sectionHoldings', label: 'Holdings' },
   { id: 'candlePanel', label: 'Charts' },
   { id: 'monteCarloPanel', label: 'VaR' },
@@ -1546,7 +1648,6 @@ const NAV_SECTIONS = [
   { id: 'eventsPanel', label: 'Events' },
   { id: 'qualityPanel', label: 'Quality' },
   { id: 'marketIntelPanel', label: 'Intelligence' },
-  { id: 'tradingToolsPanel', label: 'Tools' },
   { id: 'polymarketPanel', label: 'Markets' },
 ];
 
@@ -1559,16 +1660,20 @@ function buildNavBar() {
 }
 function _buildNavBarOriginal() {
   const container = document.getElementById('navLinks');
-  container.innerHTML = NAV_SECTIONS.map(s =>
-    `<a class="nav-link" data-target="${s.id}" onclick="scrollToSection('${s.id}')">${s.label}</a>`
-  ).join('');
+  const activePanels = new Set(getActiveTab().panels);
+  container.innerHTML = NAV_SECTIONS
+    .filter(s => activePanels.has(s.id))
+    .map(s =>
+      `<a class="nav-link" data-target="${s.id}" onclick="scrollToSection('${s.id}')">${s.label}</a>`
+    ).join('');
 }
 
 function scrollToSection(id) {
   const el = document.getElementById(id);
   if (!el) return;
+  const tabH = document.querySelector('.tab-bar')?.offsetHeight || 0;
   const navH = document.querySelector('.nav-bar')?.offsetHeight || 44;
-  const top = el.getBoundingClientRect().top + window.scrollY - navH - 8;
+  const top = el.getBoundingClientRect().top + window.scrollY - tabH - navH - 8;
   window.scrollTo({ top, behavior: 'smooth' });
 }
 
@@ -1967,14 +2072,15 @@ function renderResults(data) {
     freshText.textContent = `All prices verified live \u00B7 ${priceSnippets} \u00B7 Last calculated ${nowUtc} UTC`;
   }
 
-  // AI Insight — on-demand via button
+  // AI Insight panel was removed — skip if absent.
   const aiEl = document.getElementById('aiInsight');
-  if (ai_insight) {
+  if (aiEl) {
     aiEl.className = 'ai-box';
-    renderAiInsight(aiEl, ai_insight);
-  } else {
-    aiEl.className = 'ai-box';
-    aiEl.innerHTML = `<p style="color:var(--muted);margin-bottom:10px">Get AI-powered analysis of your portfolio risk, performance, and actionable recommendations.</p><button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Ask Veris AI</button>`;
+    if (ai_insight) {
+      renderAiInsight(aiEl, ai_insight);
+    } else {
+      aiEl.innerHTML = `<p style="color:var(--muted);margin-bottom:10px">Get AI-powered analysis of your portfolio risk, performance, and actionable recommendations.</p><button class="btn-primary" id="aiInsightBtn" onclick="fetchAiInsight()" style="font-size:0.78rem">Ask Veris AI</button>`;
+    }
   }
 
   // Holdings table — with total return, dividends, tax, rsi label
@@ -2096,7 +2202,9 @@ function renderResults(data) {
   fetchAndRenderQuality();
   fetchRebalance();
 
-  // Build navigation bar
+  // Build top-level tab bar + per-tab navigation
+  buildTabBar();
+  applyTabVisibility();
   buildNavBar();
 }
 
@@ -3950,5 +4058,257 @@ function renderAdminTable(tab) {
 }
 </script>
 <script src="/static/learn.js"></script>
+
+<!-- ── AI Chat Widget ─────────────────────────────────────── -->
+<style>
+  #chatLauncher {
+    position: fixed; bottom: 22px; right: 22px; z-index: 9000;
+    width: 56px; height: 56px; border-radius: 50%; border: none;
+    background: var(--accent); color: #0b1410; cursor: pointer;
+    box-shadow: 0 8px 28px rgba(45,184,122,0.45), 0 2px 8px rgba(0,0,0,0.4);
+    display: flex; align-items: center; justify-content: center;
+    transition: transform 120ms ease;
+  }
+  #chatLauncher:hover { transform: translateY(-2px) scale(1.05); }
+  #chatLauncher svg { width: 26px; height: 26px; }
+  #chatPanel {
+    position: fixed; bottom: 90px; right: 22px; z-index: 9001;
+    width: 380px; max-width: calc(100vw - 32px);
+    height: 560px; max-height: calc(100vh - 120px);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: 0 16px 48px rgba(0,0,0,0.55);
+    display: none; flex-direction: column; overflow: hidden;
+  }
+  #chatPanel.open { display: flex; }
+  .chat-header {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    background: linear-gradient(180deg, rgba(45,184,122,0.08), transparent);
+  }
+  .chat-header h3 {
+    margin: 0; font-size: 0.88rem; font-weight: 700; letter-spacing: 0.4px;
+    color: var(--text); display: flex; align-items: center; gap: 8px;
+  }
+  .chat-header h3::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 8px var(--accent);
+  }
+  .chat-header-actions { display: flex; gap: 6px; }
+  .chat-icon-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); width: 26px; height: 26px; border-radius: 6px;
+    cursor: pointer; font-size: 0.85rem; padding: 0;
+  }
+  .chat-icon-btn:hover { color: var(--text); border-color: var(--accent); }
+  #chatMessages {
+    flex: 1; overflow-y: auto; padding: 14px 14px 4px;
+    display: flex; flex-direction: column; gap: 10px;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  .chat-msg {
+    max-width: 85%; padding: 9px 12px; border-radius: 12px;
+    font-size: 0.82rem; line-height: 1.45; white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .chat-msg.user {
+    align-self: flex-end; background: var(--accent); color: #0b1410;
+    border-bottom-right-radius: 4px;
+  }
+  .chat-msg.model {
+    align-self: flex-start; background: rgba(255,255,255,0.05);
+    color: var(--text); border-bottom-left-radius: 4px;
+    border: 1px solid var(--border);
+  }
+  .chat-msg.system {
+    align-self: center; background: transparent; color: var(--muted);
+    font-size: 0.72rem; font-style: italic; text-align: center; max-width: 100%;
+  }
+  .chat-typing {
+    align-self: flex-start; padding: 9px 14px; display: flex; gap: 4px;
+    background: rgba(255,255,255,0.05); border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  .chat-typing span {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--muted);
+    animation: chatBlink 1.4s infinite;
+  }
+  .chat-typing span:nth-child(2) { animation-delay: 0.2s; }
+  .chat-typing span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes chatBlink {
+    0%, 60%, 100% { opacity: 0.3; }
+    30% { opacity: 1; }
+  }
+  .chat-input-row {
+    padding: 10px; border-top: 1px solid var(--border);
+    display: flex; gap: 6px; align-items: flex-end;
+  }
+  #chatInput {
+    flex: 1; min-height: 36px; max-height: 110px; resize: none;
+    padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 0.82rem;
+    font-family: inherit; outline: none;
+  }
+  #chatInput:focus { border-color: var(--accent); }
+  #chatSendBtn {
+    background: var(--accent); color: #0b1410; border: none;
+    border-radius: 10px; width: 38px; height: 38px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #chatSendBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .chat-hint {
+    padding: 0 14px 10px; font-size: 0.68rem; color: var(--muted);
+    text-align: center;
+  }
+</style>
+
+<button id="chatLauncher" onclick="toggleChat()" aria-label="Open AI assistant" title="Ask Veris AI">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+  </svg>
+</button>
+
+<div id="chatPanel" role="dialog" aria-label="AI assistant">
+  <div class="chat-header">
+    <h3>Veris AI</h3>
+    <div class="chat-header-actions">
+      <button class="chat-icon-btn" onclick="clearChat()" title="Clear conversation">&#x21bb;</button>
+      <button class="chat-icon-btn" onclick="toggleChat()" title="Close">&times;</button>
+    </div>
+  </div>
+  <div id="chatMessages"></div>
+  <div class="chat-input-row">
+    <textarea id="chatInput" rows="1" placeholder="Ask about your portfolio..."
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"
+              oninput="autoSizeChat(this)"></textarea>
+    <button id="chatSendBtn" onclick="sendChat()" aria-label="Send">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="22" y1="2" x2="11" y2="13"/>
+        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+      </svg>
+    </button>
+  </div>
+  <div class="chat-hint">Grounded in your latest portfolio analysis. Not financial advice.</div>
+</div>
+
+<script>
+  const CHAT_STORAGE_KEY = 'veris_chat_history_v1';
+  let chatHistory = [];
+  let chatBusy = false;
+
+  function loadChatHistory() {
+    try {
+      const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+      chatHistory = raw ? JSON.parse(raw) : [];
+    } catch { chatHistory = []; }
+    renderChatHistory();
+  }
+  function saveChatHistory() {
+    try { localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatHistory.slice(-40))); } catch {}
+  }
+  function renderChatHistory() {
+    const box = document.getElementById('chatMessages');
+    if (!box) return;
+    if (!chatHistory.length) {
+      box.innerHTML = `<div class="chat-msg system">Hi — I'm Veris AI. Ask me about your Sharpe ratio, drawdowns, allocation, or what your numbers mean. Run "Analyze Portfolio" first so I can see your data.</div>`;
+      return;
+    }
+    box.innerHTML = chatHistory.map(m =>
+      `<div class="chat-msg ${m.role === 'user' ? 'user' : 'model'}">${escapeHtml(m.content)}</div>`
+    ).join('');
+    box.scrollTop = box.scrollHeight;
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function toggleChat() {
+    const panel = document.getElementById('chatPanel');
+    const open = panel.classList.toggle('open');
+    if (open) {
+      renderChatHistory();
+      setTimeout(() => document.getElementById('chatInput')?.focus(), 50);
+    }
+  }
+  function clearChat() {
+    chatHistory = [];
+    saveChatHistory();
+    renderChatHistory();
+  }
+  function autoSizeChat(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 110) + 'px';
+  }
+  function showTyping() {
+    const box = document.getElementById('chatMessages');
+    const t = document.createElement('div');
+    t.className = 'chat-typing';
+    t.id = 'chatTyping';
+    t.innerHTML = '<span></span><span></span><span></span>';
+    box.appendChild(t);
+    box.scrollTop = box.scrollHeight;
+  }
+  function hideTyping() {
+    document.getElementById('chatTyping')?.remove();
+  }
+  async function sendChat() {
+    if (chatBusy) return;
+    const input = document.getElementById('chatInput');
+    const text = (input.value || '').trim();
+    if (!text) return;
+    input.value = '';
+    autoSizeChat(input);
+    chatHistory.push({ role: 'user', content: text });
+    saveChatHistory();
+    renderChatHistory();
+    showTyping();
+    chatBusy = true;
+    document.getElementById('chatSendBtn').disabled = true;
+    try {
+      const ctx = (typeof lastAnalysisData !== 'undefined' && lastAnalysisData) ? lastAnalysisData : null;
+      // Compact learning context: current learner state + curriculum index
+      // (titles/desc only, no full lesson bodies — keeps tokens low)
+      let learningCtx = null;
+      try {
+        if (typeof getLearner === 'function' && typeof STAGES !== 'undefined') {
+          learningCtx = {
+            learner: getLearner(),
+            stages: STAGES.map(s => ({
+              id: s.id,
+              name: s.name,
+              desc: s.desc,
+              unlockPreview: s.unlockPreview || '',
+              lessons: (s.lessons || []).map(l => ({ title: l.title, type: l.type })),
+            })),
+          };
+        }
+      } catch {}
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          history: chatHistory.slice(-12, -1),
+          portfolio_context: ctx,
+          learning_context: learningCtx,
+        }),
+      });
+      const data = await res.json();
+      hideTyping();
+      if (!res.ok) {
+        chatHistory.push({ role: 'model', content: data.detail || `Error: ${res.status}` });
+      } else {
+        chatHistory.push({ role: 'model', content: data.reply || '(empty response)' });
+      }
+    } catch (e) {
+      hideTyping();
+      chatHistory.push({ role: 'model', content: `Network error: ${e.message}` });
+    } finally {
+      saveChatHistory();
+      renderChatHistory();
+      chatBusy = false;
+      document.getElementById('chatSendBtn').disabled = false;
+    }
+  }
+  loadChatHistory();
+</script>
 </body>
 </html>
