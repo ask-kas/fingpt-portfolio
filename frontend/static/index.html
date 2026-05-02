@@ -1619,7 +1619,13 @@ let _session = { userId: null, portfolioId: null, username: null, token: null };
 function _loadSession() {
   try {
     const s = JSON.parse(localStorage.getItem('veris_session'));
-    if (s && s.userId) { _session = s; return true; }
+    // Require BOTH userId and token — old sessions without a token are treated as expired
+    // (forces a one-time re-login after the auth upgrade)
+    if (s && s.userId && s.token) { _session = s; return true; }
+    if (s && s.userId && !s.token) {
+      // Stale pre-token session — clean up so we don't loop
+      localStorage.removeItem('veris_session');
+    }
   } catch {}
   return false;
 }
@@ -1635,11 +1641,13 @@ async function authFetch(url, options = {}) {
     opts.headers['Authorization'] = 'Bearer ' + _session.token;
   }
   const r = await fetch(url, opts);
-  if (r.status === 401 && _session.token) {
-    // Token expired or invalid — clear session and prompt re-login
+  if (r.status === 401 && url.startsWith('/api/db/')) {
+    // Token expired, invalid, or missing — clear session and reset to login screen
     _clearSession();
-    if (typeof showAuthOverlay === 'function') showAuthOverlay();
-    else location.reload();
+    const overlay = document.getElementById('authOverlay');
+    if (overlay) overlay.classList.remove('hidden');
+    const userBar = document.getElementById('userBar');
+    if (userBar) userBar.style.display = 'none';
   }
   return r;
 }
@@ -1845,7 +1853,10 @@ document.addEventListener('DOMContentLoaded', () => {
   if (_loadSession()) {
     _loadUserPortfolio().then(() => { _enterApp(); });
   } else {
+    // No valid session — show the auth overlay so the user can log in or continue as guest
     renderHoldings();
+    const overlay = document.getElementById('authOverlay');
+    if (overlay) overlay.classList.remove('hidden');
   }
   setTimeout(() => { if (typeof initLearner === 'function') initLearner(); }, 500);
 });
