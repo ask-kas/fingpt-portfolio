@@ -2099,14 +2099,101 @@ def _summarize_learning_context(ctx: Optional[dict]) -> str:
 # the in-app chat and the standalone MCP server expose the exact same tools.
 try:
     from backend.mcp_tools import TOOLS as _MCP_TOOLS, call_tool as _mcp_call_tool
-    _GEMINI_FUNCTION_DECLS = [
+    _LOCAL_FUNCTION_DECLS = [
         {"name": t["name"], "description": t["description"], "parameters": t["parameters"]}
         for t in _MCP_TOOLS
     ]
-    logger.info("Loaded %d MCP tools for chat function-calling", len(_MCP_TOOLS))
+    _LOCAL_TOOL_NAMES = {t["name"] for t in _MCP_TOOLS}
+    logger.info("Loaded %d local MCP tools for chat function-calling", len(_MCP_TOOLS))
 except Exception as _e:
-    logger.warning("MCP tools failed to load: %s", _e)
-    _MCP_TOOLS, _mcp_call_tool, _GEMINI_FUNCTION_DECLS = [], None, []
+    logger.warning("Local MCP tools failed to load: %s", _e)
+    _MCP_TOOLS, _mcp_call_tool, _LOCAL_FUNCTION_DECLS, _LOCAL_TOOL_NAMES = [], None, [], set()
+
+try:
+    from backend import vlab_client as _vlab
+    _VLAB_AVAILABLE = True
+    logger.info("V-Lab MCP client loaded — tools will be discovered on first chat")
+except Exception as _e:
+    logger.warning("V-Lab MCP client failed to load: %s", _e)
+    _vlab = None
+    _VLAB_AVAILABLE = False
+
+
+def _vlab_proxy_name(real_name: str) -> str:
+    """Prefix V-Lab tool names so they don't collide with local tool names."""
+    return f"vlab_{real_name}" if not real_name.startswith("vlab_") else real_name
+
+
+def _vlab_real_name(proxied: str) -> str:
+    return proxied[len("vlab_"):] if proxied.startswith("vlab_") else proxied
+
+
+def _sanitize_schema_for_gemini(schema):
+    """
+    Walk a JSON Schema and strip features Gemini's pydantic validator rejects.
+
+    The newer google-genai SDK requires `enum` values to be strings. V-Lab
+    schemas use integer enums (e.g. horizon: [30, 365]) which fail validation.
+    We drop those enum constraints — Gemini can still pass any integer per the
+    `type: integer` declaration.
+    """
+    if isinstance(schema, dict):
+        cleaned = {}
+        for k, v in schema.items():
+            if k == "enum" and isinstance(v, list):
+                # Keep the enum only if all values are already strings
+                if all(isinstance(x, str) for x in v):
+                    cleaned[k] = v
+                # else drop it
+                continue
+            cleaned[k] = _sanitize_schema_for_gemini(v)
+        return cleaned
+    if isinstance(schema, list):
+        return [_sanitize_schema_for_gemini(x) for x in schema]
+    return schema
+
+
+async def _build_function_declarations() -> tuple[list[dict], dict[str, str]]:
+    """
+    Combine local MCP tool declarations with V-Lab's. Returns (declarations,
+    routing_map) where routing_map[gemini_name] is either "local" or "vlab".
+    """
+    decls = list(_LOCAL_FUNCTION_DECLS)
+    routing: dict[str, str] = {name: "local" for name in _LOCAL_TOOL_NAMES}
+
+    if _VLAB_AVAILABLE and _vlab is not None:
+        try:
+            vlab_tools = await _vlab.list_tools()
+            for t in vlab_tools:
+                gemini_name = _vlab_proxy_name(t["name"])
+                if gemini_name in routing:
+                    continue  # avoid duplicates if V-Lab and local share a name
+                params = t["inputSchema"] or {"type": "object", "properties": {}}
+                params = _sanitize_schema_for_gemini(params)
+                decls.append({
+                    "name": gemini_name,
+                    "description": (
+                        f"[NYU V-Lab] {t['description']}"
+                        if t["description"]
+                        else f"[NYU V-Lab] Tool {t['name']} from vlab.stern.nyu.edu"
+                    ),
+                    "parameters": params,
+                })
+                routing[gemini_name] = "vlab"
+        except Exception as e:
+            logger.warning("V-Lab tool discovery skipped: %s", e)
+
+    return decls, routing
+
+
+async def _dispatch_tool_call(name: str, args: dict, routing: dict[str, str]) -> dict:
+    """Route a Gemini function call to the right backend (local or V-Lab)."""
+    target = routing.get(name)
+    if target == "vlab" and _vlab is not None:
+        return await _vlab.call_tool(_vlab_real_name(name), args)
+    if target == "local" and _mcp_call_tool is not None:
+        return await asyncio.to_thread(_mcp_call_tool, name, args)
+    return {"error": f"unknown tool: {name}"}
 
 
 @app.post("/api/chat")
@@ -2128,6 +2215,17 @@ async def chat(req: ChatRequest):
         "     concepts, summarize lessons, recommend the next stage, and quiz "
         "     the user when asked. When a concept appears in the curriculum, "
         "     explain it in the same spirit as the matching lesson title.\n\n"
+        "Tool selection guide:\n"
+        "  - For volatility, you have BOTH local tools (computed from yfinance) "
+        "    and V-Lab tools (prefixed `vlab_`, sourced from NYU Stern's "
+        "    Volatility Lab — Robert Engle's research group, the academic "
+        "    gold standard for GARCH-family estimates).\n"
+        "  - PREFER V-Lab tools when the user asks for the 'best', "
+        "    'authoritative', 'institutional' volatility, or specifically "
+        "    mentions V-Lab, NYU, Engle, or research-grade estimates.\n"
+        "  - Use the local tools for portfolio-level metrics, when V-Lab "
+        "    doesn't cover the asset, or for quick comparisons.\n"
+        "  - Cite the source ('V-Lab' vs 'computed locally') in your reply.\n\n"
         "Always cite which lesson/stage you're drawing from when teaching. "
         "After calling tools, summarize results in plain language. Never give "
         "personalized buy/sell advice — frame ideas as trade-offs.\n\n"
@@ -2143,13 +2241,14 @@ async def chat(req: ChatRequest):
         contents.append({"role": role, "parts": [{"text": m.content}]})
     contents.append({"role": "user", "parts": [{"text": req.message}]})
 
+    decls, routing = await _build_function_declarations()
     config: dict = {
         "system_instruction": system_instruction,
         "temperature": 0.4,
         "max_output_tokens": 1200,
     }
-    if _GEMINI_FUNCTION_DECLS:
-        config["tools"] = [{"function_declarations": _GEMINI_FUNCTION_DECLS}]
+    if decls:
+        config["tools"] = [{"function_declarations": decls}]
 
     tool_calls_made: list[dict] = []
     MAX_HOPS = 5  # cap multi-step tool use to avoid runaway loops
@@ -2189,13 +2288,17 @@ async def chat(req: ChatRequest):
                 "parts": [{"function_call": {"name": fc.name, "args": dict(fc.args or {})}} for fc in fn_calls],
             })
 
-            # Execute each tool call
+            # Execute each tool call (routed to local or V-Lab MCP)
             response_parts = []
             for fc in fn_calls:
                 args = dict(fc.args or {})
-                logger.info("MCP tool call: %s(%s)", fc.name, args)
-                result = await asyncio.to_thread(_mcp_call_tool, fc.name, args)
-                tool_calls_made.append({"name": fc.name, "args": args, "result": result})
+                target = routing.get(fc.name, "?")
+                logger.info("[%s] tool call: %s(%s)", target, fc.name, args)
+                result = await _dispatch_tool_call(fc.name, args, routing)
+                tool_calls_made.append({
+                    "name": fc.name, "target": target,
+                    "args": args, "result": result,
+                })
                 response_parts.append({
                     "function_response": {
                         "name": fc.name,

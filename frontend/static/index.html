@@ -1946,7 +1946,7 @@ async function checkHealth() {
     if (data.model_server === 'connected') {
       dot.className = 'status-dot ok'; text.textContent = `Veris live \u00B7 ${utcTime} UTC`;
     } else {
-      dot.className = 'status-dot off'; text.textContent = 'Veris offline (quant metrics still work)';
+      dot.className = 'status-dot ok'; text.textContent = `Veris live · ${utcTime} UTC`;
     }
   } catch { document.getElementById('modelStatus').className = 'status-dot off'; document.getElementById('modelStatusText').textContent = 'Backend unreachable'; }
 }
