@@ -17,6 +17,18 @@ OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
 
 
+def _normalize_sentiment(text: str) -> str:
+    """Map any model output (positive/POS/bullish/up/etc.) to the canonical 3 buckets."""
+    s = (text or "").strip().lower()
+    if not s:
+        return "neutral"
+    if any(k in s for k in ("pos", "bull", "up", "good", "buy", "strong")):
+        return "positive"
+    if any(k in s for k in ("neg", "bear", "down", "bad", "sell", "weak")):
+        return "negative"
+    return "neutral"
+
+
 class FinGPTClient:
     """AI client: Colab notebook → Ollama (local) → offline."""
 
@@ -47,12 +59,31 @@ class FinGPTClient:
             return False
 
     async def _check_colab(self) -> bool:
+        """
+        Probe the Colab notebook. Try /health first, fall back to GET / and
+        OPTIONS /batch_analyze. Different FinGPT notebooks expose different
+        routes; we just need to know the tunnel is alive and reachable.
+        """
+        if not self.base_url or "localhost" in self.base_url:
+            self._available = False
+            return False
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f"{self.base_url}/health", headers=NGROK_HEADERS)
-                self._available = r.status_code == 200
-                return self._available
-        except Exception:
+                for path in ("/health", "/", "/batch_analyze"):
+                    try:
+                        r = await client.get(f"{self.base_url}{path}", headers=NGROK_HEADERS)
+                        # Any 2xx, 3xx, or 405 (Method Not Allowed on POST-only route)
+                        # means the server is reachable and accepting requests.
+                        if r.status_code < 400 or r.status_code == 405:
+                            self._available = True
+                            logger.info("Colab reachable at %s%s (%d)", self.base_url, path, r.status_code)
+                            return True
+                    except Exception:
+                        continue
+            self._available = False
+            return False
+        except Exception as e:
+            logger.warning("Colab health check error: %s", e)
             self._available = False
             return False
 
@@ -92,14 +123,39 @@ class FinGPTClient:
         return {"error": "No AI model backend is available"}
 
     async def batch_sentiment(self, headlines: list[str]) -> list[dict]:
+        """
+        Returns one dict per headline with at minimum a `sentiment` key set to
+        'positive' / 'negative' / 'neutral'. Tolerates several Colab response
+        shapes — different FinGPT notebook versions name the key differently.
+        """
         if self._available:
             try:
                 async with httpx.AsyncClient(timeout=120) as client:
-                    r = await client.post(f"{self.base_url}/batch_analyze", json={"headlines": headlines, "task": "sentiment"}, headers=NGROK_HEADERS)
+                    r = await client.post(
+                        f"{self.base_url}/batch_analyze",
+                        json={"headlines": headlines, "task": "sentiment"},
+                        headers=NGROK_HEADERS,
+                    )
                     r.raise_for_status()
-                    return r.json().get("results", [])
+                    payload = r.json()
+                    raw = (
+                        payload.get("results")
+                        or payload.get("predictions")
+                        or payload.get("data")
+                        or (payload if isinstance(payload, list) else [])
+                    )
+                    logger.info(
+                        "Colab sentiment: got %d results for %d headlines",
+                        len(raw), len(headlines),
+                    )
+                    return [
+                        self._coerce_sentiment_result(raw[i], headlines[i])
+                        if i < len(raw) else {"sentiment": "neutral", "headline": headlines[i]}
+                        for i in range(len(headlines))
+                    ]
             except Exception as e:
-                return [{"error": str(e), "headline": h} for h in headlines]
+                logger.warning("Colab sentiment failed: %s", e)
+                return [{"error": str(e), "headline": h, "sentiment": "neutral"} for h in headlines]
 
         if self._ollama_available:
             results = []
@@ -110,7 +166,39 @@ class FinGPTClient:
                 results.append({"sentiment": sent, "headline": h})
             return results
 
-        return [{"error": "No AI model backend is available", "headline": h} for h in headlines]
+        return [{"error": "No AI model backend is available", "headline": h, "sentiment": "neutral"} for h in headlines]
+
+    @staticmethod
+    def _coerce_sentiment_result(item, headline: str) -> dict:
+        """
+        Normalize a single sentiment record into {"sentiment": str, "headline": str}.
+        Accepts strings, dicts with various key names ('sentiment', 'label',
+        'prediction', 'class', 'output', etc.), or HuggingFace-style
+        [{"label": "POS", "score": 0.9}] entries.
+        """
+        # Plain string ("positive")
+        if isinstance(item, str):
+            return {"sentiment": _normalize_sentiment(item), "headline": headline}
+
+        # List of {label, score} — pick highest score
+        if isinstance(item, list) and item:
+            best = max(item, key=lambda x: x.get("score", 0) if isinstance(x, dict) else 0)
+            if isinstance(best, dict):
+                label = (best.get("label") or best.get("sentiment") or "")
+                return {"sentiment": _normalize_sentiment(label), "headline": headline}
+
+        if isinstance(item, dict):
+            for key in ("sentiment", "label", "prediction", "class", "output", "result", "answer"):
+                v = item.get(key)
+                if isinstance(v, str) and v.strip():
+                    return {
+                        "sentiment": _normalize_sentiment(v),
+                        "headline": item.get("headline", headline),
+                    }
+            # Nothing matched — log and default to neutral
+            logger.debug("Unrecognized sentiment shape: %s", item)
+
+        return {"sentiment": "neutral", "headline": headline}
 
     async def _ollama_call(self, prompt: str) -> dict:
         try:
