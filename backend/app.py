@@ -2047,6 +2047,56 @@ def _summarize_portfolio_context(ctx: Optional[dict]) -> str:
         lines.append(
             f"VaR 95%: {mc.get('var_95')}, CVaR 95%: {mc.get('cvar_95')}"
         )
+
+    # Macro snapshot (FRED) — Fed Funds, CPI YoY, 10Y Treasury
+    macro = ctx.get("macro") or {}
+    if macro:
+        macro_bits = []
+        for key, label in [
+            ("fed_funds_rate", "Fed Funds"),
+            ("cpi_yoy", "CPI YoY"),
+            ("treasury_10y", "10Y Treasury"),
+            ("unemployment", "Unemployment"),
+        ]:
+            v = macro.get(key)
+            if isinstance(v, dict) and v.get("value") is not None:
+                macro_bits.append(f"{label}={v['value']}")
+        if macro_bits:
+            lines.append("Macro: " + ", ".join(macro_bits))
+
+    # News + FinGPT sentiment — the dashboard runs FinGPT (Llama-2 + LoRA)
+    # over each headline and tags it positive/negative/neutral. Surface that
+    # tagging to the chat so it can answer "what's the news on AAPL?" with
+    # the actual sentiment classification instead of guessing or refusing.
+    news = ctx.get("news") or []
+    if news:
+        pos = neg = neu = 0
+        rows = []
+        for art in news[:8]:
+            title = (art.get("title") or "").strip()
+            if not title:
+                continue
+            source = art.get("source") or ""
+            published = art.get("published") or ""
+            sent_obj = art.get("fingpt_sentiment") or {}
+            sent = (sent_obj.get("sentiment") or "").lower() if isinstance(sent_obj, dict) else ""
+            if sent == "positive":
+                pos += 1
+            elif sent == "negative":
+                neg += 1
+            elif sent == "neutral":
+                neu += 1
+            sent_tag = f"[{sent}]" if sent else "[unrated]"
+            meta = " — ".join(x for x in [source, published] if x)
+            rows.append(f"  - {sent_tag} {title}" + (f" ({meta})" if meta else ""))
+        if rows:
+            tally = (
+                f" — sentiment tally: {pos} positive, {neg} negative, {neu} neutral"
+                if (pos or neg or neu) else
+                " — sentiment unavailable (FinGPT model not loaded)"
+            )
+            lines.append(f"Recent headlines ({len(rows)} shown){tally}:\n" + "\n".join(rows))
+
     return "\n".join(lines) if lines else "Portfolio snapshot unavailable."
 
 
@@ -2229,6 +2279,11 @@ async def chat(req: ChatRequest):
         "Always cite which lesson/stage you're drawing from when teaching. "
         "After calling tools, summarize results in plain language. Never give "
         "personalized buy/sell advice — frame ideas as trade-offs.\n\n"
+        "When the user asks about news or sentiment, use the headlines listed "
+        "in the portfolio snapshot below — each one is pre-tagged "
+        "[positive] / [negative] / [neutral] by FinGPT (Llama-2-7B + a "
+        "financial-sentiment LoRA). Cite the tally and quote specific "
+        "headlines; never claim you can't see the news when it's right there.\n\n"
         "User's portfolio snapshot:\n"
         + _summarize_portfolio_context(req.portfolio_context)
         + "\n\n"

@@ -30,6 +30,9 @@ from typing import Any
 logger = logging.getLogger("veris.vlab")
 
 VLAB_MCP_URL = os.getenv("VLAB_MCP_URL", "https://vlab.stern.nyu.edu/mcp")
+VLAB_DISABLED = os.getenv("VLAB_DISABLED", "").strip().lower() in ("1", "true", "yes")
+VLAB_DISCOVERY_TIMEOUT = float(os.getenv("VLAB_DISCOVERY_TIMEOUT", "12"))
+VLAB_CALL_TIMEOUT = float(os.getenv("VLAB_CALL_TIMEOUT", "30"))
 TOOL_CACHE_TTL_SECONDS = 3600  # refresh tool list once per hour
 
 _cached_tools: list[dict] = []
@@ -107,6 +110,8 @@ async def list_tools(force_refresh: bool = False) -> list[dict]:
     unreachable, so the chat can degrade gracefully.
     """
     global _cached_tools, _cache_time
+    if VLAB_DISABLED:
+        return _cached_tools  # always [] when disabled
     async with _discovery_lock:
         if (
             not force_refresh
@@ -115,7 +120,7 @@ async def list_tools(force_refresh: bool = False) -> list[dict]:
         ):
             return _cached_tools
 
-        try:
+        async def _do_discover() -> list[dict]:
             async with _stdio_session() as session:
                 resp = await session.list_tools()
                 tools: list[dict] = []
@@ -125,18 +130,31 @@ async def list_tools(force_refresh: bool = False) -> list[dict]:
                         "description": (t.description or "").strip(),
                         "inputSchema": t.inputSchema or {"type": "object", "properties": {}},
                     })
-                _cached_tools = tools
-                _cache_time = time.time()
-                logger.info("V-Lab MCP: discovered %d tools", len(tools))
-                return _cached_tools
+                return tools
+
+        try:
+            tools = await asyncio.wait_for(_do_discover(), timeout=VLAB_DISCOVERY_TIMEOUT)
+            _cached_tools = tools
+            _cache_time = time.time()
+            logger.info("V-Lab MCP: discovered %d tools", len(tools))
+            return _cached_tools
+        except asyncio.TimeoutError:
+            logger.warning(
+                "V-Lab MCP discovery timed out after %.0fs — likely waiting on "
+                "OAuth login. Chat will fall back to local tools. Set "
+                "VLAB_DISABLED=1 to skip V-Lab entirely.",
+                VLAB_DISCOVERY_TIMEOUT,
+            )
+            return _cached_tools  # keep stale cache if any, else []
         except Exception as e:
             logger.warning("V-Lab MCP discovery failed: %s", e)
-            return _cached_tools  # keep stale cache if any, else []
+            return _cached_tools
 
 
 async def call_tool(name: str, arguments: dict[str, Any] | None) -> dict:
     """Forward a tool call to V-Lab via mcp-remote. Returns a dict for the LLM."""
-    try:
+
+    async def _do_call() -> dict:
         async with _stdio_session() as session:
             result = await session.call_tool(name, arguments=arguments or {})
             parts: list[str] = []
@@ -152,6 +170,17 @@ async def call_tool(name: str, arguments: dict[str, Any] | None) -> dict:
             if getattr(result, "isError", False):
                 payload["error"] = True
             return payload
+
+    try:
+        return await asyncio.wait_for(_do_call(), timeout=VLAB_CALL_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("V-Lab MCP call %s timed out after %.0fs", name, VLAB_CALL_TIMEOUT)
+        return {
+            "source": "NYU V-Lab",
+            "tool": name,
+            "error": True,
+            "message": f"V-Lab tool {name} timed out after {VLAB_CALL_TIMEOUT:.0f}s",
+        }
     except Exception as e:
         logger.exception("V-Lab MCP call failed: %s", name)
         return {

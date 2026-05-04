@@ -206,6 +206,11 @@ Google Colab (T4 GPU)          FRED API         Polymarket API     Kalshi API
 ```bash
 git clone https://github.com/Shihanmahfuz/fingpt-portfolio.git
 cd fingpt-portfolio
+
+# Create and activate a virtualenv (recommended)
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
@@ -215,7 +220,7 @@ pip install -r requirements.txt
 cp config/.env.example config/.env
 ```
 
-Open `config/.env` and add your FRED API key (free at [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html)).
+Open `config/.env`. The minimum to get the dashboard running is a **FRED API key** (free at [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html)). Everything else is optional and unlocks specific features — see the AI Setup section below.
 
 ### 3. Run
 
@@ -225,13 +230,55 @@ python3 backend/app.py
 
 Open **http://localhost:8000**. Enter your holdings and click "Analyze Portfolio."
 
-### 4. (Optional) Enable AI features
+---
+
+## AI Setup (Optional)
+
+Veris ships with **two independent AI integrations**. You can enable either, both, or neither.
+
+### Veris Chat — Gemini-powered assistant (recommended)
+
+Powers the chat panel in the dashboard. Uses Google's `gemini-2.5-flash` with function-calling over the local MCP volatility tools, so the assistant cites computed numbers instead of guessing. Free, fast, and no GPU required.
+
+1. Get a free key at **[aistudio.google.com/apikey](https://aistudio.google.com/apikey)**.
+   - Sign in with a Google account
+   - Click "Create API key" and copy the value (starts with `AIza...`)
+   - Free tier is generous and requires no billing setup
+2. Paste the key into `config/.env`:
+   ```
+   GEMINI_API_KEY=AIzaSy...your_key_here
+   ```
+3. Restart the backend. The chat panel now responds; without the key it returns HTTP 503.
+
+### V-Lab MCP bridge — institutional volatility (optional, OAuth)
+
+[NYU Stern's V-Lab](https://vlab.stern.nyu.edu) (Robert Engle's research group) exposes its GARCH-family volatility analytics over MCP at `https://vlab.stern.nyu.edu/mcp`. When enabled, the chat assistant can call `vlab_*` tools alongside the local ones and cite "V-Lab" in its replies.
+
+The endpoint requires OAuth, so the backend wraps it via the `mcp-remote` npm package which handles the browser dance.
+
+**Prerequisites:** [Node.js](https://nodejs.org) installed so `npx` is on PATH, and a free V-Lab account.
+
+**First-run flow:**
+1. In `config/.env`, comment out or set `VLAB_DISABLED=0`.
+2. Restart the backend and send any chat message.
+3. **Watch the backend's terminal** (the one running `python3 backend/app.py`) — `mcp-remote` prints an `Open this URL to authorize` line. If a browser tab doesn't open automatically, copy that URL into your browser manually.
+4. Complete the V-Lab login. The token caches in `~/.mcp-auth/` and lasts ~24 hours.
+
+**To skip V-Lab entirely** (recommended if you don't have Node.js or don't want to OAuth), keep the default `VLAB_DISABLED=1` in `config/.env`. The chat still works using only the local volatility tools.
+
+If V-Lab discovery hangs (e.g. OAuth popup never appeared), the backend falls back to local tools after `VLAB_DISCOVERY_TIMEOUT` seconds (default 12) — chat will never block forever.
+
+### Heavy LLM — Llama-2 + FinGPT LoRA on Colab (optional, GPU)
+
+Powers `/api/model/analyze`, the citation-backed research blocks (panel 3, "AI Insight"), the news digest, and the prediction-market analysis. Runs on a free Colab T4.
 
 1. Open `colab/fingpt_server.ipynb` in [Google Colab](https://colab.research.google.com/)
-2. Runtime > Change runtime type > **T4 GPU** > Save
+2. Runtime → Change runtime type → **T4 GPU** → Save
 3. Add `HF_TOKEN` and `NGROK_AUTH_TOKEN` to Colab Secrets
-4. Runtime > Run all. Wait 2-4 minutes.
-5. Copy the ngrok URL into `config/.env` as `COLAB_MODEL_URL`
+   - `HF_TOKEN`: [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) — and accept the Llama-2 license at [huggingface.co/meta-llama/Llama-2-7b-chat-hf](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf)
+   - `NGROK_AUTH_TOKEN`: free signup at [dashboard.ngrok.com](https://dashboard.ngrok.com/signup)
+4. Runtime → Run all. Wait 2–4 minutes for model load.
+5. Copy the printed ngrok URL into `config/.env` as `COLAB_MODEL_URL`.
 6. Restart the backend.
 
 ---
