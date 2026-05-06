@@ -351,7 +351,7 @@ Every metric card discloses its computation parameters. Every info button shows 
 | `/api/cache/clear` | POST | Clear the in-memory data cache |
 
 ### Prediction Markets (11 endpoints)
-
+banana boom
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/polymarket` | GET | Trending Polymarket prediction markets with relevance scoring |
