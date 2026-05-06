@@ -14,7 +14,8 @@ Built with a FastAPI backend, vanilla JavaScript frontend, SQLAlchemy persistenc
 |---|---|
 | **Askar Kassimov** | Core platform: FastAPI backend, yfinance/FRED/SEC data pipeline, base portfolio analytics, Colab integration with ngrok tunneling, and the initial frontend dashboard. |
 | **Shihan Mahfuz** | Institutional-grade analytics rebuild, risk management system, database persistence layer, Veris brand identity, and all features listed below. |
-
+| **Anatolii Chuvashlov** | contributed to financial API integration and core analytics, validated the correctness of the quantitative models,is leading frontend restructuring, and overall feature prioritization, Gemini chat feature integration. |
+| **Yanaiya Jain** | contributed to brainstorming the project idea, frontend restructuring, presentation and pitch. |
 ---
 
 ## What Veris Shows You
@@ -204,7 +205,7 @@ Google Colab (T4 GPU)          FRED API         Polymarket API     Kalshi API
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/Shihanmahfuz/fingpt-portfolio.git
+git clone https://github.com/ask-kas/fingpt-portfolio.git
 cd fingpt-portfolio
 
 # Create and activate a virtualenv (recommended)
